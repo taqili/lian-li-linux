@@ -3,7 +3,7 @@ import { computed, onUnmounted, ref, watch } from "vue";
 import { useDialog, useMessage } from "naive-ui";
 import { backendText, invoke } from "@/utils/backendText";
 import { FolderOpen, Info, Pause, Play, Sparkles, Trash2 } from "lucide-vue-next";
-import type { DeviceInfo, LcdConfig, MediaFraming, MediaType, SensorDescriptor } from "@/types";
+import type { DeviceInfo, LcdConfig, MediaFraming, MediaType, ReadoutPreview, SensorDescriptor } from "@/types";
 import { clampFraming, defaultFraming, isDefaultFraming, MAX_ZOOM, panBy, previewPlacement } from "@/utils/mediaFraming";
 import { useConfigStore } from "@/stores/config";
 import { useDevicesStore } from "@/stores/devices";
@@ -17,7 +17,7 @@ import { useDeviceNamesStore } from "@/stores/deviceNames";
 import EditableName from "@/components/common/EditableName.vue";
 import { brightnessError } from "@/utils/brightnessControl";
 import { matchesMediaFile, pickMediaFile, playableKind } from "@/utils/mediaPicker";
-import { appendItems, defaultPlaylist, fitArea, readoutBars, type Area } from "@/utils/playlist";
+import { appendItems, defaultPlaylist, effectiveSlots, overlayEnabled, placeReserving, readoutBars, type Area } from "@/utils/playlist";
 import PlaylistEditor from "@/components/lcd/PlaylistEditor.vue";
 import SensorGaugeEditor from "@/components/lcd/SensorGaugeEditor.vue";
 import ColorPicker from "@/components/rgb/ColorPicker.vue";
@@ -110,7 +110,7 @@ function onMediaType(v: MediaType) {
   if (v === "sensor") ensureSensor();
   if (v === "playlist" && !props.entry.playlist) {
     props.entry.playlist = defaultPlaylist();
-    if (props.entry.path && playableKind(props.entry.path)) appendItems(props.entry.playlist, [props.entry.path]);
+    if (props.entry.path && playableKind(props.entry.path)) appendItems(props.entry.playlist.items, [props.entry.path]);
     setFraming({ ...defaultFraming(), fit: "contain" }, false);
   }
   config.markDirty();
@@ -118,11 +118,11 @@ function onMediaType(v: MediaType) {
 
 const isPlaylist = computed(() => props.entry.type === "playlist");
 const playlistSelection = ref(0);
-const previewPath = computed(() => {
-  if (!isPlaylist.value) return props.entry.path;
+const selectedItem = computed(() => {
   const items = props.entry.playlist?.items ?? [];
   return items[Math.min(playlistSelection.value, items.length - 1)] ?? null;
 });
+const previewPath = computed(() => (isPlaylist.value ? selectedItem.value?.path ?? null : props.entry.path));
 const previewKind = computed(() => {
   if (!isPlaylist.value) return props.entry.type;
   return previewPath.value ? playableKind(previewPath.value) : null;
@@ -276,28 +276,68 @@ function onMediaLoaded(event: Event) {
   if (element instanceof HTMLVideoElement && element.paused) element.currentTime = 0.001;
 }
 const previewFraming = computed<MediaFraming>(() =>
-  isPlaylist.value ? { ...defaultFraming(), fit: framing.value.fit } : framing.value,
+  isPlaylist.value ? { ...defaultFraming(), fit: selectedItem.value?.fit ?? framing.value.fit } : framing.value,
 );
-const placement = computed(() =>
-  sourceSize.value ? previewPlacement(previewFraming.value, sourceSize.value, previewTarget.value) : null,
-);
+const percentOf = (area: Area) => {
+  const [width, height] = previewTarget.value;
+  return { x: (area.x / width) * 100, y: (area.y / height) * 100, width: (area.width / width) * 100, height: (area.height / height) * 100 };
+};
+/** Where the playlist renderer will put the selected item, reserved bars included. */
+const playlistArea = computed(() => {
+  const overlay = props.entry.playlist?.overlay;
+  if (!isPlaylist.value || !sourceSize.value) return null;
+  const reserve = overlay && overlayEnabled(overlay) && overlay.reserve_px > 0 ? overlay.reserve_px : null;
+  return placeReserving(sourceSize.value, previewTarget.value, previewFraming.value.fit, reserve);
+});
+const placement = computed(() => {
+  if (!sourceSize.value) return null;
+  const placed = previewPlacement(previewFraming.value, sourceSize.value, previewTarget.value);
+  return playlistArea.value ? { ...placed, box: percentOf(playlistArea.value) } : placed;
+});
+
+const readoutPreviews = ref<ReadoutPreview[] | null>(null);
+const readoutPreviewSupported = computed(() => daemon.info?.capabilities.includes("playlist_control") ?? false);
+async function refreshReadoutPreviews() {
+  const overlay = props.entry.playlist?.overlay;
+  if (!isPlaylist.value || !overlay || !overlayEnabled(overlay) || !readoutPreviewSupported.value) {
+    readoutPreviews.value = null;
+    return;
+  }
+  try {
+    readoutPreviews.value = await ipc.request<ReadoutPreview[]>("PreviewPlaylistReadouts", {
+      overlay: JSON.parse(JSON.stringify(overlay)),
+    });
+  } catch {
+    readoutPreviews.value = null;
+  }
+}
+const scheduleReadoutPreviews = useDebounce(() => void refreshReadoutPreviews(), 300);
+watch(() => [isPlaylist.value, JSON.stringify(props.entry.playlist?.overlay)], () => scheduleReadoutPreviews(), { immediate: true });
+const readoutTimer = setInterval(() => {
+  if (!document.hidden && document.hasFocus() && isPlaylist.value) void refreshReadoutPreviews();
+}, 2000);
+onUnmounted(() => clearInterval(readoutTimer));
+
 const previewReadouts = computed(() => {
   const overlay = props.entry.playlist?.overlay;
-  if (!isPlaylist.value || !overlay || framing.value.fit !== "contain" || !sourceSize.value) return [];
-  const canvas = previewTarget.value;
-  const bars = readoutBars(fitArea(sourceSize.value, canvas), canvas);
+  if (!overlay || !playlistArea.value || previewFraming.value.fit !== "contain") return [];
+  const bars = readoutBars(playlistArea.value, previewTarget.value);
   if (!bars) return [];
-  const percent = (area: Area) => ({
-    x: (area.x / canvas[0]) * 100,
-    y: (area.y / canvas[1]) * 100,
-    width: (area.width / canvas[0]) * 100,
-    height: (area.height / canvas[1]) * 100,
-  });
-  return [
-    overlay.cpu ? { label: "CPU", rect: percent(bars[0]) } : null,
-    overlay.gpu ? { label: "GPU", rect: percent(bars[1]) } : null,
-  ].filter((readout) => readout !== null);
+  return effectiveSlots(overlay)
+    .map((slot, index) => slot.kind === "off" ? null : {
+      key: index,
+      label: readoutPreviews.value?.[index]?.label ?? slot.label ?? "",
+      text: readoutPreviews.value?.[index]?.text ?? "--",
+      rect: percentOf(bars[index]),
+    })
+    .filter((readout) => readout !== null);
 });
+const playlistControllable = computed(() =>
+  readoutPreviewSupported.value
+  && !!selectedDevice.value
+  && config.savedLcds[props.index]?.type === "playlist"
+  && !entryChanged.value,
+);
 const percentRect = (rect: { x: number; y: number; width: number; height: number }) => ({
   left: `${rect.x}%`,
   top: `${rect.y}%`,
@@ -854,6 +894,9 @@ async function handleStopClean() {
           v-model:selected="playlistSelection"
           :playlist="entry.playlist"
           :fit="framing.fit"
+          :previews="readoutPreviews"
+          :device-id="selectedDeviceId || undefined"
+          :can-control="playlistControllable"
         />
         <n-checkbox v-if="isPlaylist && deviceSupportsH264" :checked="entry.custom_h264 ?? true" @update:checked="(v) => { entry.custom_h264 = v; config.markDirty(); }">{{ t("lcd.configCard.h264Streaming") }}</n-checkbox>
         <p v-if="isFileMedia && !isPlaylist && mediaPreviewUrl" class="hint">{{ t("lcd.configCard.dragHint") }}</p>
@@ -927,12 +970,12 @@ async function handleStopClean() {
           <span v-else class="muted">{{ previewError ? "!" : "…" }}</span>
           <div
             v-for="readout in mediaPreviewUrl ? previewReadouts : []"
-            :key="readout.label"
+            :key="readout.key"
             class="readout-bar"
             :style="percentRect(readout.rect)"
           >
-            <span class="readout-label">{{ readout.label }}</span>
-            <span class="readout-value">°C</span>
+            <span v-if="readout.label" class="readout-label">{{ readout.label }}</span>
+            <span class="readout-value">{{ readout.text }}</span>
           </div>
         </div>
         <div class="preview-footer">

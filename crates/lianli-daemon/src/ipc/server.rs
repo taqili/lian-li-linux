@@ -80,6 +80,7 @@ pub fn build_info() -> lianli_shared::daemon::DaemonBuildInfo {
             lianli_shared::daemon::INSTALLATION_HEALTH.into(),
             lianli_shared::daemon::DESKTOP_RETRY.into(),
             lianli_shared::daemon::SENSOR_PREVIEW.into(),
+            lianli_shared::daemon::PLAYLIST_CONTROL.into(),
             "daemon_info".into(),
             "hardware_video".into(),
             "media_preparation".into(),
@@ -554,6 +555,49 @@ fn handle_request(
                     UiMessage::new("daemon.lcd.brightnessUnconfirmed").param("error", error),
                 ),
             }
+        }
+        IpcRequest::PlaylistControl { device_id, action } => {
+            if device_id.as_ref().is_some_and(|id| id.len() > 256) {
+                return IpcResponse::error_ui(
+                    "LCD device ID is too long",
+                    UiMessage::new("daemon.playlist.deviceIdTooLong"),
+                );
+            }
+            let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+            if tx
+                .send(DaemonEvent::PlaylistControl {
+                    device_id,
+                    action,
+                    reply: reply_tx,
+                })
+                .is_err()
+            {
+                return super::service_unavailable();
+            }
+            match reply_rx.recv_timeout(Duration::from_secs(3)) {
+                Ok(statuses) if statuses.is_empty() => IpcResponse::error_ui(
+                    "No playlist is playing on that screen",
+                    UiMessage::new("daemon.playlist.noneActive"),
+                ),
+                Ok(statuses) => IpcResponse::ok(
+                    statuses
+                        .into_iter()
+                        .map(|(device_id, status)| {
+                            serde_json::json!({ "device_id": device_id, "status": status })
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+                Err(error) => IpcResponse::error_ui(
+                    format!("Playlist command not confirmed: {error}"),
+                    UiMessage::new("daemon.playlist.unconfirmed").param("error", error),
+                ),
+            }
+        }
+        IpcRequest::PreviewPlaylistReadouts { overlay } => {
+            IpcResponse::ok(lianli_media::playlist_readout_preview(
+                &overlay,
+                &lianli_shared::sensors::enumerate_sensors(),
+            ))
         }
         IpcRequest::StartPixelClean {
             device_id,

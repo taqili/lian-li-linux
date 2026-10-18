@@ -27,10 +27,7 @@ fn needs_media_tools(state: &super::DaemonState) -> bool {
         config.lcds.iter().any(|lcd| {
             matches!(lcd.media_type, MediaType::Video | MediaType::Gif)
                 || (lcd.media_type == MediaType::Playlist
-                    && lcd.playlist.iter().flat_map(|p| &p.items).any(|path| {
-                        lianli_shared::playlist::PlaylistItemKind::from_path(path)
-                            != Some(lianli_shared::playlist::PlaylistItemKind::Image)
-                    }))
+                    && lcd.playlist.as_ref().is_some_and(|p| p.has_motion()))
                 || (lcd.media_type == MediaType::Custom
                     && state.user_templates.iter().any(|template| {
                         Some(template.id.as_str()) == lcd.template_id.as_deref()

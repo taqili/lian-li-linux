@@ -249,3 +249,11 @@ pub fn prepare_media_asset(
         }
     }
 }
+
+/// The playlist readouts as they would appear now, for the settings preview.
+pub fn playlist_readout_preview(
+    overlay: &lianli_shared::playlist::TemperatureOverlay,
+    sensors: &[SensorInfo],
+) -> Vec<lianli_shared::playlist::ReadoutPreview> {
+    custom::readout_preview(overlay, sensors)
+}

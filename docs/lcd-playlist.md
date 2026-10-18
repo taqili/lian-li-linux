@@ -1,6 +1,6 @@
-# LCD media playlist and temperature readouts
+# LCD media playlist and readouts
 
-This guide covers two features added by the
+This guide covers features added by the
 [taqili fork](https://github.com/taqili/lian-li-linux) of
 [Lian Li Linux](https://github.com/sgtaziz/lian-li-linux). They are not part of
 the upstream project.
@@ -12,15 +12,21 @@ Choose **Playlist** as an LCD's media type to cycle through any mix of images
 playlist runs in the daemon, so it keeps playing when the app is closed.
 
 - **Add files** opens a picker that accepts several files at once.
-- **Add folder** adds the supported files in a folder, sorted by name. Turn on
-  **Include subfolders** to scan up to eight levels deep. Hidden files and
-  symlinked folders are skipped. The folder is read once when you add it, so
-  add it again to pick up new files.
+- **Add folder** with **Keep folder in sync** turned on follows the folder: it
+  is checked every minute, and new or removed files take effect from the next
+  pass through the playlist. Turn **Keep folder in sync** off to add the
+  folder's current files once instead. **Include subfolders** scans up to
+  eight levels deep. Hidden files and symlinked folders are skipped.
 - Items play in list order and loop. **Shuffle** randomises the order on every
   pass without playing the same item twice in a row.
-- A playlist holds up to 200 items, which keeps several playlists and saved
-  profiles within the app's limit on referenced media files. Duplicate paths
-  are ignored.
+- A playlist holds up to 200 files, counting the alternate playlist, and
+  follows up to eight folders. This keeps several playlists and saved profiles
+  within the app's limit on referenced media files. Duplicate paths are
+  ignored.
+
+Followed folders are read by the daemon. If the daemon runs in system mode, the
+folder must be readable by the daemon's account, and folder contents are not
+copied by managed media import.
 
 ### Timing
 
@@ -29,10 +35,40 @@ playlist runs in the daemon, so it keeps playing when the app is closed.
 | Image duration | 10 s | How long each still image stays on screen |
 | Minimum GIF/video time | 0 (off) | Loops a shorter clip until this much time has passed |
 | Maximum GIF/video time | 0 (off) | Cuts a longer clip off at this point |
+| Crossfade between items | Off | Blends each item into the next over 100–3000 ms (600 ms by default) |
 
 GIFs and videos otherwise play through once before the next item. A playlist
 with a single item keeps playing it without reloading. **FPS** caps GIF and
 video playback (at most 60).
+
+### Item settings
+
+The sliders button on an item overrides the playlist's settings for that item:
+
+- **Show for** sets an image's own duration.
+- **Times to play** plays a GIF or video several times before moving on.
+- **Start at** and **End at** trim a video to the part between them.
+- **Fit** gives the item its own Fit, Fill or Stretch mode.
+
+### Playback controls
+
+Once the playlist is saved and the screen is connected, the playlist editor
+shows **Previous**, **Pause**/**Resume** and **Next** buttons and the file on
+screen. The same commands are available from a terminal, which lets you bind
+them to keyboard shortcuts in your desktop environment:
+
+```bash
+lianli-control playlist next
+lianli-control playlist previous
+lianli-control playlist toggle          # pause or resume
+lianli-control playlist status
+lianli-control playlist next --device <device-id>
+```
+
+Without `--device`, the command applies to every screen showing a playlist.
+**Previous** goes back through up to 16 recently shown items.
+
+### Loading and failures
 
 The next item starts loading in the background a few seconds before the
 current image ends, or when a GIF or video finishes, and the current item stays
@@ -46,25 +82,43 @@ are not available for playlists.
 
 ### Resource use
 
-Images only wake the renderer four times a second and are re-sent only when
+Playlists of images only wake the renderer four times a second, or up to 30
+times a second when crossfades are on, and frames are re-sent only when
 something changes. GIFs and videos are decoded and encoded live instead of
 being prepared in advance, which keeps memory bounded for long clips but costs
-more CPU than a single video. Lower **FPS** if the daemon's CPU use matters
-more than smoothness.
+more CPU than a single video. Short clips that fit in memory are encoded once
+per loop and reused until a readout changes. Lower **FPS** if the daemon's CPU
+use matters more than smoothness.
 
-## Temperature readouts
+## Readouts
 
-With **Fit** selected, the playlist can show CPU and GPU temperatures in °C in
-the black bars beside or above and below the media. The CPU reading uses the
-left or top bar and the GPU reading uses the right or bottom bar. Each can be
-turned on separately. Readings refresh every two seconds.
+With **Fit** selected, the playlist can show two readouts in the black bars
+beside or above and below the media: the first in the left or top bar, the
+second in the right or bottom bar. Each readout can show:
+
+| Readout | Shows |
+| --- | --- |
+| CPU temperature | The CPU control temperature |
+| GPU temperature | The GPU edge temperature |
+| GPU hotspot temperature | The AMD GPU junction temperature |
+| CPU usage, GPU usage | Utilisation in percent |
+| Clock | Local time |
+| Other sensor | Any listed sensor, such as a fan speed |
+
+Readings refresh every two seconds. Each readout can have its own label and a
+small graph of the last minute. Temperatures can be shown in °F, and turn
+orange and then red at the temperatures you set (75 °C and 85 °C by default).
+The readouts can use any installed font. The playlist editor shows the current
+values and which sensor each readout reads.
 
 Which bars are used depends on the media and the screen orientation. On the
 Lancool 207 Digital in its default portrait orientation (720×1472), widescreen
 media leaves bars above and below. Rotated to landscape (1472×720), the same
 media leaves 96-pixel bars on the left and right. A bar thinner than 64 pixels
-is left empty, and nothing is drawn over the media. The preview shows where
-the readouts will appear.
+is left empty, and nothing is drawn over the media. Turn on **Always keep room
+for readouts** to shrink media that would otherwise fill the screen, so bars at
+least as wide as the chosen size always exist. The preview shows where the
+readouts will appear.
 
 ### Sensors
 
@@ -75,10 +129,30 @@ the readouts will appear.
 - **GPU:** an NVIDIA GPU if present, otherwise the `edge` temperature of an
   AMD card. On systems with integrated and discrete AMD graphics, the card that
   also reports a `junction` temperature is chosen, which is the discrete one.
+  The hotspot readout uses that card's `junction` temperature.
 
 Sensors are matched by driver name, PCI address and label, never by `hwmonN`
 number. Choose a specific sensor from the list to override the automatic pick.
-If a sensor disappears, its readout shows `--°C` until it returns.
+If a sensor disappears, its readout shows `--` until it returns.
+
+## Schedule
+
+### Alternate playlist
+
+An alternate playlist takes over while any listed program runs, or during a
+daily time window, and the main playlist resumes afterwards. It can play its
+own items or show only the readouts, enlarged to fill half of the screen each.
+
+Programs are matched by process name or executable file name, ignoring case,
+for example `steam` or `Cyberpunk2077.exe`. Running programs are checked every
+five seconds. Games that only run on another operating system, such as on a
+separate Windows boot, cannot be detected.
+
+### Dimming
+
+Dimming darkens the picture sent to the screen to the chosen percentage during
+a daily time window. The screen's own brightness setting is not changed. Time
+windows may cross midnight, such as 23:00 to 07:00.
 
 ## Installing the fork on Arch Linux and CachyOS
 

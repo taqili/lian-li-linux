@@ -70,6 +70,7 @@ pub(crate) struct VideoStream {
     next: Option<Instant>,
     started: Option<Instant>,
     shown: usize,
+    cache_position: Option<usize>,
     queue_capacity: usize,
     looping: bool,
     recycle: bool,
@@ -160,6 +161,20 @@ impl VideoStream {
         looping: bool,
         control: &PreparationControl,
     ) -> Result<Self, MediaError> {
+        Self::with_trim(path, fps, size, fit, looping, None, control)
+    }
+
+    /// Like [`VideoStream::new`], playing only the given start and optional
+    /// end, in seconds, of a video. Animations ignore the trim.
+    pub(crate) fn with_trim(
+        path: &Path,
+        fps: f32,
+        size: (u32, u32),
+        fit: ImageFit,
+        looping: bool,
+        trim: Option<(f32, Option<f32>)>,
+        control: &PreparationControl,
+    ) -> Result<Self, MediaError> {
         control.check()?;
         if !fps.is_finite() || !(1.0..=60.0).contains(&fps) {
             return Err(MediaError::InvalidFps);
@@ -187,7 +202,16 @@ impl VideoStream {
             .name("widget-video".into())
             .spawn(move || {
                 let _slot = slot;
-                let result = produce(&path, fps, size, fit, looping, hardware, &mut producer);
+                let result = produce(
+                    &path,
+                    fps,
+                    size,
+                    fit,
+                    looping,
+                    trim,
+                    hardware,
+                    &mut producer,
+                );
                 let mut frames = producer.shared.0.lock();
                 frames.finished = true;
                 if let Err(error) = result {
@@ -205,6 +229,7 @@ impl VideoStream {
             next: None,
             started: None,
             shown: 1,
+            cache_position: None,
             queue_capacity: capacity,
             looping,
             recycle,
@@ -275,10 +300,11 @@ impl VideoStream {
             } else {
                 elapsed.min(total.as_nanos() - 1)
             };
-            let frame = cache
+            let (index, frame) = cache
                 .frames
                 .iter()
-                .find(|frame| {
+                .enumerate()
+                .find(|(_, frame)| {
                     if position < frame.duration.as_nanos() {
                         true
                     } else {
@@ -287,6 +313,7 @@ impl VideoStream {
                     }
                 })
                 .expect("position within cache");
+            self.cache_position = Some(index);
             let changed = !Arc::ptr_eq(current, frame);
             self.current = Some(frame.clone());
             return Ok(changed);
@@ -347,6 +374,23 @@ impl VideoStream {
             && self.next.is_some_and(|next| now >= next)
     }
 
+    /// Index of the displayed frame within a fully cached clip. The same
+    /// index always shows the same pixels, so encoded output can be reused.
+    pub(crate) fn cache_position(&self) -> Option<usize> {
+        self.cache_position
+    }
+
+    /// Moves the playback clock forward by a pause, so the clip resumes
+    /// where it stopped instead of skipping ahead.
+    pub(crate) fn shift(&mut self, paused: Duration) {
+        for instant in [&mut self.started, &mut self.next, &mut self.sample_next]
+            .into_iter()
+            .flatten()
+        {
+            *instant += paused;
+        }
+    }
+
     pub(crate) fn frame(&self) -> &RgbaImage {
         &self
             .current
@@ -371,12 +415,14 @@ impl Drop for VideoStream {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn produce(
     path: &Path,
     fps: f32,
     size: (u32, u32),
     fit: ImageFit,
     looping: bool,
+    trim: Option<(f32, Option<f32>)>,
     hardware: bool,
     producer: &mut Producer,
 ) -> Result<(), MediaError> {
@@ -390,8 +436,17 @@ fn produce(
                 producer.emit(frame, delay)
             })?;
         } else {
-            let command =
-                super::ffmpeg::rgba_command(path, fps, size, fit, looping && !first_pass, hardware);
+            // ffmpeg's own looping would seek once and then run past the
+            // trimmed end, so a trimmed clip restarts the process each pass.
+            let command = super::ffmpeg::rgba_command(
+                path,
+                fps,
+                size,
+                fit,
+                looping && !first_pass && trim.is_none(),
+                hardware,
+                trim.filter(|_| !animation),
+            );
             let cancelled = producer.stop.clone();
             let mut count = 0;
             let output = super::process::stream_live_frames(

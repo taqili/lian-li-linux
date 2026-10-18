@@ -32,6 +32,7 @@ pub mod module_health;
 pub mod native_switch;
 pub mod operation_job;
 mod ownership;
+pub mod playlist_control;
 mod process_owner;
 mod protected_path;
 mod recovery_trigger;

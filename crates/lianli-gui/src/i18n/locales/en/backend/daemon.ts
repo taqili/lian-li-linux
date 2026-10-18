@@ -104,6 +104,11 @@ export default {
     openRgbRetryQueued: "An OpenRGB retry is already queued",
     openRgbRetryNotAccepted: "The daemon stopped before accepting the OpenRGB retry",
   },
+  playlist: {
+    deviceIdTooLong: "LCD device ID is too long",
+    noneActive: "No playlist is playing on that screen",
+    unconfirmed: "Playlist command not confirmed: {error}",
+  },
   lcd: {
     startupUploadBusy: "Wait for the startup image upload to finish before changing LCD state",
     brightnessOutOfRange: "LCD brightness must be between 0 and 100",

@@ -224,6 +224,18 @@ pub enum IpcRequest {
         width: u32,
         height: u32,
     },
+    /// Applies a transport command to playing playlists: the LCD with
+    /// `device_id`, or every playlist LCD when it is absent. Returns each
+    /// affected LCD's `{ device_id, status }`.
+    PlaylistControl {
+        #[serde(default)]
+        device_id: Option<String>,
+        action: crate::playlist::PlaylistAction,
+    },
+    /// Returns the playlist readouts as they would appear now.
+    PreviewPlaylistReadouts {
+        overlay: Box<crate::playlist::TemperatureOverlay>,
+    },
     Ping,
     GetDaemonInfo,
     GetInstallationHealth,
@@ -303,6 +315,7 @@ impl IpcRequest {
             | Self::GetLcdTemplates
             | Self::RenderTemplatePreview { .. }
             | Self::RenderSensorPreview { .. }
+            | Self::PreviewPlaylistReadouts { .. }
             | Self::Ping
             | Self::GetDaemonInfo
             | Self::GetInstallationHealth
@@ -353,6 +366,7 @@ impl IpcRequest {
             | Self::InstallTemplate { .. }
             | Self::StartCatalogInstall { .. }
             | Self::SetLcdBrightness { .. }
+            | Self::PlaylistControl { .. }
             | Self::PingDevice { .. }
             | Self::RebootWirelessLcd { .. }
             | Self::DisableLc217Wifi { .. }

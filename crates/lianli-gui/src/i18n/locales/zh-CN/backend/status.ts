@@ -101,6 +101,7 @@ const messages: typeof en = {
     lcdTemplateWidget: "{lcd}：模板“{template}”的组件“{widget}”",
     noMediaPath: "{lcd} 没有媒体路径",
     playlistItem: "{lcd} 播放列表项目",
+    playlistFont: "{lcd} 播放列表读数字体",
     emptyPlaylist: "{lcd} 的播放列表为空",
     noTemplateId: "{lcd} 没有模板 ID",
     missingTemplate: "{lcd} 引用了不存在的模板“{template}”",

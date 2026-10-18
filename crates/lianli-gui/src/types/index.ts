@@ -317,23 +317,90 @@ export interface LcdConfig {
   playlist?: PlaylistConfig | null;
 }
 
+export type ReadoutKind = "off" | "cpu_temp" | "gpu_temp" | "gpu_hotspot" | "cpu_usage" | "gpu_usage" | "clock" | "sensor";
+
+export interface ReadoutSlot {
+  kind: ReadoutKind;
+  /** Omitted to pick the sensor automatically; required for "sensor". */
+  source?: SensorSourceConfig;
+  label?: string;
+  sparkline: boolean;
+}
+
 export interface TemperatureOverlay {
-  cpu: boolean;
-  gpu: boolean;
-  /** Omitted to pick the sensor automatically. */
+  /** Older configurations; superseded by `slots`. */
+  cpu?: boolean;
+  gpu?: boolean;
   cpu_source?: SensorSourceConfig;
   gpu_source?: SensorSourceConfig;
+  slots?: [ReadoutSlot, ReadoutSlot];
+  fahrenheit: boolean;
+  colors: boolean;
+  warm_c: number;
+  hot_c: number;
+  font_path?: string;
+  /** 0 turns reserving space off. */
+  reserve_px: number;
+}
+
+export interface PlaylistItem {
+  path: string;
+  seconds?: number;
+  plays?: number;
+  fit?: MediaFit;
+  start_seconds?: number;
+  end_seconds?: number;
+}
+
+export interface PlaylistFolder {
+  path: string;
+  recursive: boolean;
+}
+
+export interface TimeWindow {
+  start: string;
+  end: string;
+}
+
+export interface AlternatePlaylist {
+  items: PlaylistItem[];
+  readouts_only: boolean;
+  processes: string[];
+  window?: TimeWindow;
+}
+
+export interface Dimming {
+  window: TimeWindow;
+  percent: number;
 }
 
 export interface PlaylistConfig {
-  items: string[];
+  items: PlaylistItem[];
+  folders?: PlaylistFolder[];
   image_seconds: number;
   /** 0 plays each GIF or video once. */
   min_animation_seconds: number;
   /** 0 never cuts a GIF or video short. */
   max_animation_seconds: number;
   shuffle: boolean;
+  transition: { crossfade: boolean; crossfade_ms: number };
   overlay: TemperatureOverlay;
+  alternate?: AlternatePlaylist | null;
+  dimming?: Dimming | null;
+}
+
+export type PlaylistAction = "next" | "previous" | "pause" | "resume" | "toggle_pause" | "status";
+
+export interface PlaylistStatus {
+  paused: boolean;
+  current: string | null;
+  alternate: boolean;
+}
+
+export interface ReadoutPreview {
+  label: string;
+  text: string;
+  sensor: string | null;
 }
 
 export type MediaFit = "stretch" | "contain" | "cover";

@@ -91,6 +91,29 @@ pub fn find_default_gpu_temp(sensors: &[SensorInfo]) -> Option<SensorSource> {
         .map(|s| s.source.clone())
 }
 
+/// The AMD junction (hotspot) temperature of the GPU that
+/// [`find_default_gpu_temp`] picks, or of any AMD GPU when that pick has none.
+pub fn find_default_gpu_hotspot(sensors: &[SensorInfo]) -> Option<SensorSource> {
+    let junctions: Vec<&SensorInfo> = sensors
+        .iter()
+        .filter(|s| {
+            s.unit == Unit::C
+                && matches!(&s.source, SensorSource::Hwmon { name, .. } if name == "amdgpu")
+                && has_label(s, &["junction"], "Hotspot Temp")
+        })
+        .collect();
+    let edge = find_default_gpu_temp(sensors);
+    let device = match &edge {
+        Some(SensorSource::Hwmon { device_path, .. }) => Some(device_path.as_str()),
+        _ => None,
+    };
+    junctions
+        .iter()
+        .find(|s| device.is_some() && hwmon_device(s) == device)
+        .or_else(|| junctions.first())
+        .map(|s| s.source.clone())
+}
+
 /// Resolve a `SensorCategory` to a concrete `SensorSourceConfig` based on
 /// what the current machine exposes. Returns `None` when no suitable sensor
 /// is available.
@@ -290,6 +313,11 @@ mod tests {
             device_of(find_default_gpu_temp(&sensors)),
             "0000:03:00.0/temp1"
         );
+        assert_eq!(
+            device_of(find_default_gpu_hotspot(&sensors)),
+            "0000:03:00.0/temp2"
+        );
+        assert_eq!(find_default_gpu_hotspot(&sensors[..1]), None);
     }
 
     #[test]

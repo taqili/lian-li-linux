@@ -159,6 +159,14 @@ enum Command {
     },
     #[command(hide = true)]
     FinishTransfer,
+    /// Control a running LCD playlist, for example from a keyboard shortcut
+    Playlist {
+        #[arg(value_enum)]
+        action: PlaylistArg,
+        /// Device ID of one screen; every playlist screen when omitted
+        #[arg(long)]
+        device: Option<String>,
+    },
     /// Switch native service mode after administrator authorization
     SwitchMode {
         #[arg(long, value_enum)]
@@ -309,6 +317,29 @@ enum Command {
 enum Scope {
     User,
     System,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum PlaylistArg {
+    Next,
+    Previous,
+    Pause,
+    Resume,
+    Toggle,
+    Status,
+}
+
+impl From<PlaylistArg> for lianli_shared::playlist::PlaylistAction {
+    fn from(action: PlaylistArg) -> Self {
+        match action {
+            PlaylistArg::Next => Self::Next,
+            PlaylistArg::Previous => Self::Previous,
+            PlaylistArg::Pause => Self::Pause,
+            PlaylistArg::Resume => Self::Resume,
+            PlaylistArg::Toggle => Self::TogglePause,
+            PlaylistArg::Status => Self::Status,
+        }
+    }
 }
 
 #[derive(Clone, clap::ValueEnum)]
@@ -607,6 +638,11 @@ fn main() -> anyhow::Result<()> {
                     Ok(())
                 })?
             );
+        }
+        Command::Playlist { action, device } => {
+            for line in lianli_control::playlist_control::run(action.into(), device)? {
+                println!("{line}");
+            }
         }
         Command::RecoverSwitch => println!(
             "{}",

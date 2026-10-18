@@ -37,6 +37,12 @@ Add \-\-check-assets to open referenced assets under the executing account,
 including inactive profiles and templates. This does not change settings or
 prove access under a different daemon account or filesystem namespace.
 .TP
+.B playlist next|previous|pause|resume|toggle|status [\-\-device ID]
+Control a running LCD playlist, for example from a keyboard shortcut. The
+command is sent to the user daemon, or the system daemon when no user daemon
+answers. Without \-\-device it applies to every screen showing a playlist.
+Prints the state and current file of each affected screen.
+.TP
 .B check-destination \-\-scope user|system
 Authorize and preflight a native service destination without stopping the current daemon.
 .TP

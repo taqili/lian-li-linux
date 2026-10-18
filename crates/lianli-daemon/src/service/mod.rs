@@ -73,6 +73,7 @@ fn event_label(event: &DaemonEvent) -> &'static str {
         DaemonEvent::RebootWirelessLcd { .. } => "RebootWirelessLcd",
         DaemonEvent::DisableLc217Wifi { .. } => "DisableLc217Wifi",
         DaemonEvent::SetLcdBrightness { .. } => "SetLcdBrightness",
+        DaemonEvent::PlaylistControl { .. } => "PlaylistControl",
         DaemonEvent::StartPixelClean { .. } => "StartPixelClean",
         DaemonEvent::UploadStartupImage { .. } => "UploadStartupImage",
         DaemonEvent::StopPixelClean { .. } => "StopPixelClean",
@@ -215,6 +216,11 @@ pub enum DaemonEvent {
         request_id: Option<String>,
         deadline: Instant,
         reply: std::sync::mpsc::SyncSender<Result<bool, String>>,
+    },
+    PlaylistControl {
+        device_id: Option<String>,
+        action: lianli_shared::playlist::PlaylistAction,
+        reply: std::sync::mpsc::SyncSender<Vec<(String, lianli_shared::playlist::PlaylistStatus)>>,
     },
     StartPixelClean {
         device_id: Option<String>,
@@ -1147,6 +1153,28 @@ impl ServiceManager {
                         Err(format!("LCD not found: {device_id}"))
                     };
                     let _ = reply.try_send(result);
+                }
+                DaemonEvent::PlaylistControl {
+                    device_id,
+                    action,
+                    reply,
+                } => {
+                    let statuses = self
+                        .targets
+                        .lock()
+                        .values()
+                        .filter(|target| {
+                            device_id
+                                .as_ref()
+                                .is_none_or(|id| &target.device_identity == id)
+                        })
+                        .filter_map(|target| {
+                            target
+                                .playlist_command(action)
+                                .map(|status| (target.device_identity.clone(), status))
+                        })
+                        .collect();
+                    let _ = reply.try_send(statuses);
                 }
                 DaemonEvent::StartPixelClean {
                     device_id,

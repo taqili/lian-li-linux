@@ -73,40 +73,51 @@ fn playlist_dependencies(config: &LcdConfig, owner: &str) -> Vec<AssetDependency
     let Some(playlist) = &config.playlist else {
         return Vec::new();
     };
-    playlist
-        .items
-        .iter()
-        .map(|path| {
-            let (owner, owner_ui) = lcd_owner(
-                owner,
-                "status.mediaAccess.playlistItem",
-                format!("{owner} playlist item"),
-            );
-            AssetDependency {
-                path: path.clone(),
-                owner,
-                owner_ui,
-                kind: match PlaylistItemKind::from_path(path) {
-                    Some(PlaylistItemKind::Image) => AssetKind::Image,
-                    Some(PlaylistItemKind::Animation) => AssetKind::Gif,
-                    Some(PlaylistItemKind::Video) => AssetKind::Video,
-                    None => AssetKind::File,
-                },
-            }
-        })
-        .collect()
+    let items = playlist.all_items().map(|item| {
+        let (owner, owner_ui) = lcd_owner(
+            owner,
+            "status.mediaAccess.playlistItem",
+            format!("{owner} playlist item"),
+        );
+        AssetDependency {
+            path: item.path.clone(),
+            owner,
+            owner_ui,
+            kind: match item.kind() {
+                Some(PlaylistItemKind::Image) => AssetKind::Image,
+                Some(PlaylistItemKind::Animation) => AssetKind::Gif,
+                Some(PlaylistItemKind::Video) => AssetKind::Video,
+                None => AssetKind::File,
+            },
+        }
+    });
+    let font = playlist.overlay.font_path.iter().map(|path| {
+        let (owner, owner_ui) = lcd_owner(
+            owner,
+            "status.mediaAccess.playlistFont",
+            format!("{owner} playlist readout font"),
+        );
+        AssetDependency {
+            path: path.clone(),
+            owner,
+            owner_ui,
+            kind: AssetKind::Font,
+        }
+    });
+    items.chain(font).collect()
 }
 
 pub fn map_lcd_paths(config: &mut LcdConfig, mut map: impl FnMut(&mut PathBuf)) {
     if let Some(path) = &mut config.path {
         map(path);
     }
-    for path in config
-        .playlist
-        .iter_mut()
-        .flat_map(|playlist| &mut playlist.items)
-    {
-        map(path);
+    if let Some(playlist) = &mut config.playlist {
+        for item in playlist.all_items_mut() {
+            map(&mut item.path);
+        }
+        if let Some(font) = &mut playlist.overlay.font_path {
+            map(font);
+        }
     }
     if let Some(path) = config
         .sensor
@@ -319,7 +330,7 @@ pub fn lcd_dependencies(
             if config
                 .playlist
                 .as_ref()
-                .is_none_or(|playlist| playlist.items.is_empty())
+                .is_none_or(|playlist| playlist.items.is_empty() && playlist.folders.is_empty())
             {
                 return Err(lcd_error(
                     "status.mediaAccess.emptyPlaylist",
@@ -433,7 +444,7 @@ mod tests {
             *path = Path::new("/managed").join(path.file_name().unwrap())
         });
         assert_eq!(
-            rewritten.playlist.unwrap().items[2],
+            rewritten.playlist.unwrap().items[2].path,
             Path::new("/managed/c.mp4")
         );
     }

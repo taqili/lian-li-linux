@@ -106,6 +106,11 @@ const messages: typeof en = {
     openRgbRetryQueued: "OpenRGB 重试已在队列中",
     openRgbRetryNotAccepted: "守护进程在接受 OpenRGB 重试前已停止",
   },
+  playlist: {
+    deviceIdTooLong: "LCD 设备 ID 过长",
+    noneActive: "该屏幕上没有正在播放的播放列表",
+    unconfirmed: "播放列表命令未确认：{error}",
+  },
   lcd: {
     startupUploadBusy: "请等待启动画面上传完成后再更改 LCD 状态",
     brightnessOutOfRange: "LCD 亮度必须在 0 到 100 之间",

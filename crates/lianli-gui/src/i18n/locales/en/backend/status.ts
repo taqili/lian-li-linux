@@ -99,6 +99,7 @@ export default {
     lcdTemplateWidget: "{lcd}: Template '{template}' widget '{widget}'",
     noMediaPath: "{lcd} has no media path",
     playlistItem: "{lcd} playlist item",
+    playlistFont: "{lcd} playlist readout font",
     emptyPlaylist: "{lcd} playlist has no items",
     noTemplateId: "{lcd} has no template ID",
     missingTemplate: "{lcd} references missing template '{template}'",

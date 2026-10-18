@@ -13,6 +13,7 @@ pub const MEDIA_DECODE: &str = "media_decode";
 pub const INSTALLATION_HEALTH: &str = "installation_health";
 pub const DESKTOP_RETRY: &str = "desktop_retry";
 pub const SENSOR_PREVIEW: &str = "sensor_preview";
+pub const PLAYLIST_CONTROL: &str = "playlist_control";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonBuildInfo {

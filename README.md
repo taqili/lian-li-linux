@@ -18,7 +18,9 @@
 > [LICENSE](LICENSE).
 >
 > This fork ([taqili/lian-li-linux](https://github.com/taqili/lian-li-linux))
-> adds an LCD media playlist and Fit-mode CPU/GPU temperature readouts; see
+> adds an LCD media playlist with crossfades, playback controls, readouts such
+> as CPU/GPU temperatures in the bars beside Fit-mode media, and a schedule for
+> alternate playlists and dimming; see
 > [docs/lcd-playlist.md](docs/lcd-playlist.md). The fork's changes were written
 > with AI assistance, are not reviewed or supported by the upstream maintainer,
 > and should be reported here rather than upstream. Install it with

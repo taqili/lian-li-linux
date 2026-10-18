@@ -22,7 +22,8 @@ pub use enumerate::{
     read_pwm_header,
 };
 pub use picker::{
-    find_default_cpu_temp, find_default_gpu_temp, infer_sensor_category, pick_source_for_category,
+    find_default_cpu_temp, find_default_gpu_hotspot, find_default_gpu_temp, infer_sensor_category,
+    pick_source_for_category,
 };
 pub use read::{get_mem_usage, read_sensor_reading, read_sensor_value, SensorReading};
 pub use resolve::{

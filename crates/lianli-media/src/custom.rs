@@ -31,6 +31,7 @@ use lianli_shared::systeminfo::SysSensor;
 use lianli_shared::template::ImageFit;
 use lianli_shared::template::{LcdTemplate, TemplateBackground, WidgetKind};
 use parking_lot::Mutex;
+pub(crate) use playlist::readout_preview;
 use playlist::Playlist;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -77,7 +78,44 @@ pub struct CustomAsset {
     frame_index: AtomicUsize,
     start_instant: Instant,
     playlist: Option<Mutex<Playlist>>,
+    frame_cache: Mutex<FrameCache>,
     _retained_budget: crate::resource_budget::RetainedBudget,
+}
+
+/// Encoded frames of a fully cached playlist clip. A looping clip repeats
+/// the same composites, so each is encoded once until the readouts, dimming
+/// or clip change, which clears the cache.
+#[derive(Default)]
+struct FrameCache {
+    prefix: Option<(u64, u64, u32)>,
+    frames: HashMap<usize, Vec<u8>>,
+    budget: crate::resource_budget::RetainedBudget,
+}
+
+const FRAME_CACHE_BYTES: usize = 48 * 1024 * 1024;
+
+impl FrameCache {
+    fn get(&mut self, key: (u64, u64, u32, usize)) -> Option<Vec<u8>> {
+        if self.prefix != Some((key.0, key.1, key.2)) {
+            return None;
+        }
+        self.frames.get(&key.3).cloned()
+    }
+
+    fn insert(&mut self, key: (u64, u64, u32, usize), jpeg: &[u8]) {
+        let prefix = (key.0, key.1, key.2);
+        if self.prefix != Some(prefix) {
+            *self = Self {
+                prefix: Some(prefix),
+                ..Self::default()
+            };
+        }
+        let used: usize = self.frames.values().map(Vec::len).sum();
+        if used + jpeg.len() > FRAME_CACHE_BYTES || self.budget.reserve(jpeg.len()).is_err() {
+            return;
+        }
+        self.frames.insert(key.3, jpeg.to_vec());
+    }
 }
 
 impl std::fmt::Debug for CustomAsset {
@@ -136,15 +174,14 @@ impl CustomAsset {
             "widgets": []
         }))
         .map_err(|error| MediaError::InvalidConfig(error.to_string()))?;
-        let stills_only = config.items.iter().all(|path| {
-            lianli_shared::playlist::PlaylistItemKind::from_path(path)
-                == Some(lianli_shared::playlist::PlaylistItemKind::Image)
-        });
-        // Still images only need ticks fine enough to honour hold times.
-        let fps = if stills_only {
-            fps.clamp(1.0, 4.0)
-        } else {
+        // Still images only need ticks fine enough to honour hold times and
+        // the clock; crossfades need a smooth frame rate while they run.
+        let fps = if config.has_motion() {
             fps.clamp(1.0, 60.0)
+        } else if config.transition.crossfade {
+            fps.clamp(1.0, 30.0)
+        } else {
+            fps.clamp(1.0, 4.0)
         };
         let playlist = Playlist::new(
             config,
@@ -384,6 +421,7 @@ impl CustomAsset {
             frame_index: AtomicUsize::new(1),
             start_instant: Instant::now(),
             playlist: playlist.map(Mutex::new),
+            frame_cache: Mutex::new(FrameCache::default()),
         }))
     }
 
@@ -393,6 +431,15 @@ impl CustomAsset {
 
     pub fn render_fps(&self) -> f32 {
         self.render_fps
+    }
+
+    /// Applies a transport command to a playlist; `None` for templates.
+    pub fn playlist_command(
+        &self,
+        action: lianli_shared::playlist::PlaylistAction,
+    ) -> Option<lianli_shared::playlist::PlaylistStatus> {
+        let playlist = self.playlist.as_ref()?;
+        Some(playlist.lock().command(action, Instant::now()))
     }
 
     pub fn canvas_width(&self) -> u32 {
@@ -439,13 +486,24 @@ impl CustomAsset {
 
     pub fn render_frame(&self, force: bool) -> Result<Option<FrameInfo>, MediaError> {
         let outcome = self.render_frame_rgba_with(force, |bytes| {
-            encode_jpeg_rgba(
+            let key = self
+                .playlist
+                .as_ref()
+                .and_then(|playlist| playlist.lock().frame_key());
+            if let Some(jpeg) = key.and_then(|key| self.frame_cache.lock().get(key)) {
+                return Ok(jpeg);
+            }
+            let jpeg = encode_jpeg_rgba(
                 bytes,
                 self.canonical_width,
                 self.canonical_height,
                 self.orientation,
                 &self.screen,
-            )
+            )?;
+            if let Some(key) = key {
+                self.frame_cache.lock().insert(key, &jpeg);
+            }
+            Ok(jpeg)
         })?;
         match outcome {
             None => Ok(None),
@@ -665,6 +723,7 @@ mod tests {
             frame_index: AtomicUsize::new(0),
             start_instant: Instant::now(),
             playlist: None,
+            frame_cache: Mutex::new(FrameCache::default()),
             _retained_budget: crate::resource_budget::RetainedBudget::default(),
         }
     }

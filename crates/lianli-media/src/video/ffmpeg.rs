@@ -3,8 +3,52 @@ use crate::common::MediaError;
 use crate::PreparationControl;
 use lianli_shared::media::MediaFraming;
 use lianli_shared::template::ImageFit;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::SystemTime;
+
+/// Probe results keyed by path and invalidated when the file's size or
+/// modification time changes, so replaying a playlist does not re-run ffprobe.
+#[derive(Clone, Copy, Default)]
+struct Probed {
+    fps: Option<Option<f32>>,
+    size: Option<(u32, u32)>,
+}
+
+type Stamp = (u64, SystemTime);
+const MAX_PROBES: usize = 512;
+static PROBES: parking_lot::Mutex<Option<std::collections::HashMap<PathBuf, (Stamp, Probed)>>> =
+    parking_lot::Mutex::new(None);
+
+fn stamp(path: &Path) -> Option<Stamp> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.len(), metadata.modified().ok()?))
+}
+
+fn cached_probe(path: &Path) -> Option<Probed> {
+    let stamp = stamp(path)?;
+    let probes = PROBES.lock();
+    let (cached, probed) = probes.as_ref()?.get(path)?;
+    (*cached == stamp).then_some(*probed)
+}
+
+fn remember_probe(path: &Path, update: impl FnOnce(&mut Probed)) {
+    let Some(stamp) = stamp(path) else {
+        return;
+    };
+    let mut probes = PROBES.lock();
+    let probes = probes.get_or_insert_with(Default::default);
+    if probes.len() >= MAX_PROBES && !probes.contains_key(path) {
+        probes.clear();
+    }
+    let entry = probes
+        .entry(path.to_path_buf())
+        .or_insert((stamp, Probed::default()));
+    if entry.0 != stamp {
+        *entry = (stamp, Probed::default());
+    }
+    update(&mut entry.1);
+}
 
 /// Probe the source's average frame rate via ffprobe. Returns `None` if the
 /// file isn't a video/animated source or ffprobe is unavailable.
@@ -15,6 +59,15 @@ pub fn probe_source_fps(path: &Path) -> Option<f32> {
 }
 
 fn probe_fps(path: &Path, control: &PreparationControl) -> Result<Option<f32>, MediaError> {
+    if let Some(fps) = cached_probe(path).and_then(|probed| probed.fps) {
+        return Ok(fps);
+    }
+    let fps = run_probe_fps(path, control)?;
+    remember_probe(path, |probed| probed.fps = Some(fps));
+    Ok(fps)
+}
+
+fn run_probe_fps(path: &Path, control: &PreparationControl) -> Result<Option<f32>, MediaError> {
     let mut cmd = Command::new("ffprobe");
     cmd.args([
         "-v",
@@ -51,6 +104,18 @@ fn probe_fps(path: &Path, control: &PreparationControl) -> Result<Option<f32>, M
 /// Display size of the first video stream, after the rotation that ffmpeg
 /// applies automatically when decoding.
 pub(crate) fn probe_display_size(
+    path: &Path,
+    control: &PreparationControl,
+) -> Result<(u32, u32), MediaError> {
+    if let Some(size) = cached_probe(path).and_then(|probed| probed.size) {
+        return Ok(size);
+    }
+    let size = run_probe_display_size(path, control)?;
+    remember_probe(path, |probed| probed.size = Some(size));
+    Ok(size)
+}
+
+fn run_probe_display_size(
     path: &Path,
     control: &PreparationControl,
 ) -> Result<(u32, u32), MediaError> {
@@ -146,6 +211,7 @@ pub(super) fn stream_rgba(
         &framing_filter(framing, width, height),
         false,
         control.hardware_video,
+        None,
     );
     let output = control.stream_frames(command, frame_bytes, consume)?;
     check_rgba_output(output)
@@ -197,6 +263,7 @@ pub(super) fn rgba_command(
     fit: ImageFit,
     looping: bool,
     hardware: bool,
+    trim: Option<(f32, Option<f32>)>,
 ) -> Command {
     let (width, height) = size;
     let scale = match fit {
@@ -204,7 +271,7 @@ pub(super) fn rgba_command(
         ImageFit::Contain => format!("scale={width}:{height}:force_original_aspect_ratio=decrease:flags=lanczos,format=rgba,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black@0"),
         ImageFit::Cover => format!("scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,crop={width}:{height}"),
     };
-    filtered_rgba_command(input, fps, &scale, looping, hardware)
+    filtered_rgba_command(input, fps, &scale, looping, hardware, trim)
 }
 
 fn filtered_rgba_command(
@@ -213,6 +280,7 @@ fn filtered_rgba_command(
     filter: &str,
     looping: bool,
     hardware: bool,
+    trim: Option<(f32, Option<f32>)>,
 ) -> Command {
     let mut command = Command::new("ffmpeg");
     command.args([
@@ -237,6 +305,12 @@ fn filtered_rgba_command(
     ]);
     if looping {
         command.args(["-stream_loop", "-1"]);
+    }
+    if let Some((start, _)) = trim.filter(|(start, _)| *start > 0.0) {
+        command.args(["-ss", &format!("{start:.3}")]);
+    }
+    if let Some(length) = trim.and_then(|(start, end)| end.map(|end| end - start)) {
+        command.args(["-t", &format!("{:.3}", length.max(0.001))]);
     }
     command.arg("-i").arg(input).args([
         "-map",
@@ -264,6 +338,8 @@ fn filtered_rgba_command(
 #[cfg(test)]
 mod tests {
     use super::parse_display_size;
+    use crate::PreparationControl;
+    use std::process::Command;
 
     #[test]
     fn quarter_turn_rotation_swaps_reported_dimensions() {
@@ -285,5 +361,37 @@ mod tests {
         );
         assert_eq!(parse_display_size("width=0\nheight=1080\n"), None);
         assert_eq!(parse_display_size(""), None);
+    }
+
+    #[test]
+    fn cached_probe_is_reused_until_the_file_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("clip.mp4");
+        let encode = |size: &str| {
+            let status = Command::new("ffmpeg")
+                .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
+                .arg(format!("testsrc=size={size}:rate=5"))
+                .args(["-t", "0.4", "-pix_fmt", "yuv420p"])
+                .arg(&path)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        let control = PreparationControl::new(false);
+        encode("32x16");
+        assert_eq!(
+            super::probe_display_size(&path, &control).unwrap(),
+            (32, 16)
+        );
+        assert_eq!(
+            super::cached_probe(&path).and_then(|probed| probed.size),
+            Some((32, 16))
+        );
+        encode("48x16");
+        assert_eq!(super::cached_probe(&path).map(|probed| probed.size), None);
+        assert_eq!(
+            super::probe_display_size(&path, &control).unwrap(),
+            (48, 16)
+        );
     }
 }

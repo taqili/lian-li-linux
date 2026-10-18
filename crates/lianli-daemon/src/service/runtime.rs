@@ -1407,6 +1407,17 @@ impl ActiveTarget {
         self.flush_pending_brightness(wireless, builder);
     }
 
+    /// Forwards a transport command to the playlist on screen, if any.
+    pub(super) fn playlist_command(
+        &self,
+        action: lianli_shared::playlist::PlaylistAction,
+    ) -> Option<lianli_shared::playlist::PlaylistStatus> {
+        match &self.playback_asset.kind {
+            MediaAssetKind::Custom { asset } => asset.playlist_command(action),
+            _ => None,
+        }
+    }
+
     pub(super) fn request_brightness(
         &mut self,
         wireless: Option<&WirelessController>,
