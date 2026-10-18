@@ -83,7 +83,8 @@ pub fn prepare_media_asset(
 ) -> Result<MediaAssetKind, MediaError> {
     let control = control.into();
     control.check()?;
-    if cfg.media_type != MediaType::Custom {
+    // Playlists skip unreadable items one at a time instead of failing as a whole.
+    if !matches!(cfg.media_type, MediaType::Custom | MediaType::Playlist) {
         let dependencies = lianli_shared::media_dependencies::lcd_dependencies(cfg, user_templates)
             .map_err(|error| MediaError::InvalidConfig(error.to_string()))?;
         asset_access::validate_dependencies(&dependencies, &control)?;

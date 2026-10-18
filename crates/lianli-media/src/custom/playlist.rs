@@ -24,7 +24,12 @@ use tracing::{debug, warn};
 /// 1472×720 panel leaves 96px on each side.
 const MIN_BAR: u32 = 64;
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
-const FAILURE_BACKOFF: Duration = Duration::from_secs(30);
+const ITEM_BACKOFF: Duration = Duration::from_secs(30);
+const MAX_ITEM_BACKOFF: Duration = Duration::from_secs(600);
+const PRELOAD_LEAD: Duration = Duration::from_secs(3);
+/// Bounds startup work when a cause shared by every item, such as a missing
+/// ffmpeg, makes each load fail.
+const MAX_INITIAL_ATTEMPTS: usize = 8;
 const MAX_FPS: f32 = 60.0;
 const UNAVAILABLE: &str = "--°C";
 const LABEL_COLOR: Rgba<u8> = Rgba([170, 170, 170, 255]);
@@ -151,6 +156,7 @@ fn load(
     control: &PreparationControl,
 ) -> Result<Loaded, MediaError> {
     control.check()?;
+    crate::asset_access::check_file(&entry.path)?;
     match entry.kind {
         PlaylistItemKind::Image => {
             let image = crate::image::open_image(&entry.path)?;
@@ -200,6 +206,16 @@ fn load(
 struct Loader {
     entry: usize,
     handle: JoinHandle<Result<Loaded, MediaError>>,
+}
+
+/// Stopping a decoder joins its thread and reaps ffmpeg, which must not stall
+/// the renderer at every switch. If no thread can be started it drops inline.
+fn retire(old: Loaded) {
+    if matches!(old.content, Content::Motion(_)) {
+        let _ = thread::Builder::new()
+            .name("playlist-retire".into())
+            .spawn(move || drop(old));
+    }
 }
 
 /// Small deterministic generator for shuffling; playback order needs no
@@ -429,6 +445,21 @@ fn render_readout(bar: Area, label: &str, value: &str, font: &FontVec) -> RgbaIm
     image
 }
 
+/// Per-item failure state. A failing item is skipped with a growing backoff
+/// and warned about once until it plays through again.
+#[derive(Default)]
+struct Health {
+    failures: u32,
+    retry_at: Option<Instant>,
+    reported: bool,
+}
+
+fn item_backoff(failures: u32) -> Duration {
+    ITEM_BACKOFF
+        .saturating_mul(1 << failures.saturating_sub(1).min(5))
+        .min(MAX_ITEM_BACKOFF)
+}
+
 pub(crate) struct Playlist {
     entries: Vec<Entry>,
     order: Vec<usize>,
@@ -444,9 +475,8 @@ pub(crate) struct Playlist {
     shown_at: Option<Instant>,
     loader: Option<Loader>,
     control: PreparationControl,
-    failures: usize,
-    reported: Vec<bool>,
-    retry_at: Option<Instant>,
+    health: Vec<Health>,
+    idle_until: Option<Instant>,
     overlay: Option<Overlay>,
 }
 
@@ -481,22 +511,29 @@ impl Playlist {
             shuffler.shuffle(&mut order, None);
         }
 
-        let mut reported = vec![false; entries.len()];
+        let now = Instant::now();
+        let mut health: Vec<Health> = entries.iter().map(|_| Health::default()).collect();
         let mut last_error = None;
         let mut first = None;
-        for (position, &entry) in order.iter().enumerate() {
+        for (position, &entry) in order.iter().enumerate().take(MAX_INITIAL_ATTEMPTS) {
             match load(&entries[entry], &settings, control) {
                 Ok(loaded) => {
                     first = Some((position, entry, loaded));
                     break;
                 }
-                Err(MediaError::Cancelled) => return Err(MediaError::Cancelled),
+                Err(error @ (MediaError::Cancelled | MediaError::HelperTimedOut(_))) => {
+                    return Err(error)
+                }
                 Err(error) => {
                     warn!(
                         "playlist item '{}' cannot be played: {error}",
                         entries[entry].path.display()
                     );
-                    reported[entry] = true;
+                    health[entry] = Health {
+                        failures: 1,
+                        retry_at: Some(now + item_backoff(1)),
+                        reported: true,
+                    };
                     last_error = Some(error);
                 }
             }
@@ -520,9 +557,8 @@ impl Playlist {
             shown_at: None,
             loader: None,
             control: PreparationControl::new(control.hardware_video),
-            failures: 0,
-            reported,
-            retry_at: None,
+            health,
+            idle_until: None,
             overlay: Overlay::new(&config.overlay, sensors),
         };
         playlist.refresh_bars();
@@ -551,15 +587,51 @@ impl Playlist {
         entry
     }
 
+    /// The next item in order that is not backing off after a failure. When
+    /// every item is backing off, waits until the earliest one may retry.
+    fn take_next_ready(&mut self, now: Instant) -> Option<usize> {
+        for _ in 0..self.entries.len() {
+            let entry = self.take_next();
+            if self.health[entry].retry_at.is_none_or(|at| now >= at) {
+                return Some(entry);
+            }
+        }
+        self.idle_until = self.health.iter().filter_map(|h| h.retry_at).min();
+        None
+    }
+
+    /// Preloading holds a decoder and an ffmpeg process, so it starts only
+    /// shortly before the current item is due to end.
+    fn preload_due(&self, now: Instant) -> bool {
+        if self.loader.is_some() || self.idle_until.is_some_and(|at| now < at) {
+            return false;
+        }
+        if self.active_failed {
+            return true;
+        }
+        if self.entries.len() == 1 {
+            return false;
+        }
+        let Some(shown_at) = self.shown_at else {
+            return false;
+        };
+        let elapsed = now.saturating_duration_since(shown_at) + PRELOAD_LEAD;
+        match &self.active.content {
+            Content::Still { .. } => elapsed >= self.image_hold,
+            Content::Motion(_) => {
+                self.max_motion.is_some_and(|max| elapsed >= max) || self.active_done(now)
+            }
+        }
+    }
+
     fn start_loading(&mut self, now: Instant) {
-        if self.loader.is_some() || self.retry_at.is_some_and(|at| now < at) {
+        if !self.preload_due(now) {
             return;
         }
-        if self.entries.len() == 1 && !self.active_failed {
+        self.idle_until = None;
+        let Some(entry) = self.take_next_ready(now) else {
             return;
-        }
-        self.retry_at = None;
-        let entry = self.take_next();
+        };
         let item = Entry {
             path: self.entries[entry].path.clone(),
             kind: self.entries[entry].kind,
@@ -573,7 +645,7 @@ impl Playlist {
             Ok(handle) => self.loader = Some(Loader { entry, handle }),
             Err(error) => {
                 warn!("playlist could not start loading the next item: {error}");
-                self.retry_at = Some(now + FAILURE_BACKOFF);
+                self.idle_until = Some(now + ITEM_BACKOFF);
             }
         }
     }
@@ -598,6 +670,21 @@ impl Playlist {
         }
     }
 
+    fn mark_failed(&mut self, entry: usize, error: &MediaError, now: Instant) {
+        if matches!(error, MediaError::Cancelled) {
+            return;
+        }
+        let health = &mut self.health[entry];
+        health.failures = health.failures.saturating_add(1);
+        health.retry_at = Some(now + item_backoff(health.failures));
+        if !std::mem::replace(&mut health.reported, true) {
+            warn!(
+                "playlist item '{}' cannot be played: {error}",
+                self.entries[entry].path.display()
+            );
+        }
+    }
+
     /// Swaps in the preloaded item once it is ready. Until then the current
     /// item keeps playing, so a slow load never blanks the screen.
     fn try_switch(&mut self, now: Instant) -> bool {
@@ -614,51 +701,32 @@ impl Playlist {
             .handle
             .join()
             .unwrap_or_else(|_| Err(MediaError::Ffmpeg("Playlist loader panicked".into())));
-        match result {
-            Ok(mut loaded) => {
-                let started = match &mut loaded.content {
-                    // Starts the clip's clock on the frame that first shows it.
-                    Content::Motion(stream) => stream.advance(now).map(|_| ()),
-                    Content::Still { .. } => Ok(()),
-                };
-                self.reported[loader.entry] = false;
-                self.active = loaded;
-                self.active_entry = loader.entry;
-                self.active_failed = started.is_err();
-                if let Err(error) = started {
-                    self.report_failure(loader.entry, &error);
-                }
-                self.shown_at = Some(now);
-                self.failures = 0;
-                self.refresh_bars();
-                self.start_loading(now);
-                true
-            }
+        let mut loaded = match result {
+            Ok(loaded) => loaded,
             Err(error) => {
-                self.report_failure(loader.entry, &error);
-                self.failures += 1;
-                if self.failures >= self.entries.len() {
-                    self.failures = 0;
-                    self.retry_at = Some(now + FAILURE_BACKOFF);
-                }
+                self.mark_failed(loader.entry, &error, now);
                 self.start_loading(now);
-                false
+                return false;
             }
+        };
+        let started = match &mut loaded.content {
+            // Starts the clip's clock on the frame that first shows it.
+            Content::Motion(stream) => stream.advance(now).map(|_| ()),
+            Content::Still { .. } => Ok(()),
+        };
+        if !self.active_failed {
+            self.health[self.active_entry] = Health::default();
         }
-    }
-
-    /// Warns once per item until it plays again, so a broken file in a
-    /// looping playlist does not repeat the same warning every cycle.
-    fn report_failure(&mut self, entry: usize, error: &MediaError) {
-        if matches!(error, MediaError::Cancelled)
-            || std::mem::replace(&mut self.reported[entry], true)
-        {
-            return;
+        retire(std::mem::replace(&mut self.active, loaded));
+        self.active_entry = loader.entry;
+        self.active_failed = started.is_err();
+        if let Err(error) = started {
+            self.mark_failed(loader.entry, &error, now);
         }
-        warn!(
-            "playlist item '{}' cannot be played: {error}",
-            self.entries[entry].path.display()
-        );
+        self.shown_at = Some(now);
+        self.refresh_bars();
+        self.start_loading(now);
+        true
     }
 
     pub(crate) fn advance(&mut self, now: Instant, font: &FontVec) -> bool {
@@ -675,7 +743,7 @@ impl Playlist {
             Ok(advanced) => changed |= advanced,
             Err(error) => {
                 self.active_failed = true;
-                self.report_failure(self.active_entry, &error);
+                self.mark_failed(self.active_entry, &error, now);
             }
         }
         if self.active_done(now) {
@@ -951,15 +1019,24 @@ mod tests {
         assert_eq!(centre(&playlist, canvas)[1], 255);
 
         let gif_start = start + Duration::from_secs(1);
-        wait_for_loader(&playlist);
         playlist.advance(gif_start + Duration::from_millis(100), &font);
         assert_eq!(playlist.active_entry, 1, "GIF ended before its last frame");
-        assert!(playlist.advance(gif_start + Duration::from_millis(200), &font));
+        assert!(
+            playlist.loader.is_none(),
+            "next item preloaded while the clip still had time to run"
+        );
+        playlist.advance(gif_start + Duration::from_millis(200), &font);
+        assert_eq!(
+            playlist.active_entry, 1,
+            "screen changed before the next item loaded"
+        );
+        wait_for_loader(&playlist);
+        assert!(playlist.advance(gif_start + Duration::from_millis(210), &font));
         assert_eq!(playlist.active_entry, 2);
         assert_eq!(centre(&playlist, canvas), [0, 0, 255, 255]);
 
         wait_for_loader(&playlist);
-        assert!(playlist.advance(gif_start + Duration::from_millis(1200), &font));
+        assert!(playlist.advance(gif_start + Duration::from_millis(1210), &font));
         assert_eq!(playlist.active_entry, 0, "playlist did not loop");
     }
 
@@ -984,13 +1061,14 @@ mod tests {
         .unwrap();
         let start = Instant::now();
         playlist.advance(start, &font);
-        wait_for_loader(&playlist);
         playlist.advance(start + Duration::from_millis(500), &font);
         assert_eq!(
             playlist.active_entry, 0,
             "short GIF did not loop to the minimum"
         );
         playlist.advance(start + Duration::from_secs(1), &font);
+        wait_for_loader(&playlist);
+        playlist.advance(start + Duration::from_millis(1010), &font);
         assert_eq!(playlist.active_entry, 1);
 
         let capped = PlaylistConfig {
@@ -1065,10 +1143,17 @@ mod tests {
         )
         .unwrap();
         assert_eq!(playlist.active_entry, 1);
+        assert_eq!(playlist.health[0].failures, 1);
+        assert!(playlist.health[0].reported);
         let start = Instant::now();
         playlist.advance(start, &font);
+        assert_eq!(
+            playlist.loader.as_ref().map(|loader| loader.entry),
+            Some(1),
+            "the broken item was retried during its backoff"
+        );
         wait_for_loader(&playlist);
-        assert!(!playlist.advance(start + Duration::from_secs(1), &font));
+        playlist.advance(start + Duration::from_secs(1), &font);
         assert_eq!(
             playlist.active_entry, 1,
             "a failed load replaced the screen"
@@ -1244,5 +1329,39 @@ mod tests {
             panic!("video loaded as a still");
         };
         assert_eq!(stream.frame().dimensions(), (32, 64));
+    }
+
+    #[test]
+    fn failing_items_back_off_longer_each_time_up_to_a_cap() {
+        assert_eq!(item_backoff(1), Duration::from_secs(30));
+        assert_eq!(item_backoff(2), Duration::from_secs(60));
+        assert_eq!(item_backoff(3), Duration::from_secs(120));
+        assert_eq!(item_backoff(40), MAX_ITEM_BACKOFF);
+    }
+
+    #[test]
+    fn startup_gives_up_after_a_bounded_number_of_broken_items() {
+        let root = tempfile::tempdir().unwrap();
+        let items: Vec<PathBuf> = (0..MAX_INITIAL_ATTEMPTS + 2)
+            .map(|index| {
+                let path = root.path().join(format!("broken{index}.png"));
+                std::fs::write(&path, b"not an image").unwrap();
+                path
+            })
+            .chain([still(&root.path().join("late.png"), [1, 1, 1])])
+            .collect();
+        let config = PlaylistConfig {
+            items,
+            ..Default::default()
+        };
+        assert!(Playlist::new(
+            &config,
+            ImageFit::Contain,
+            (64, 64),
+            10.0,
+            &[],
+            &PreparationControl::new(false),
+        )
+        .is_err());
     }
 }

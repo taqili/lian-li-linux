@@ -855,6 +855,7 @@ async function handleStopClean() {
           :playlist="entry.playlist"
           :fit="framing.fit"
         />
+        <n-checkbox v-if="isPlaylist && deviceSupportsH264" :checked="entry.custom_h264 ?? true" @update:checked="(v) => { entry.custom_h264 = v; config.markDirty(); }">{{ t("lcd.configCard.h264Streaming") }}</n-checkbox>
         <p v-if="isFileMedia && !isPlaylist && mediaPreviewUrl" class="hint">{{ t("lcd.configCard.dragHint") }}</p>
 
         <div v-if="entry.type === 'color'" class="field">

@@ -157,7 +157,7 @@ const overlayEnabled = computed(() => props.playlist.overlay.cpu || props.playli
     <ol v-else class="items">
       <li
         v-for="(path, index) in playlist.items"
-        :key="path"
+        :key="`${index}:${path}`"
         :class="{ selected: index === selected }"
         @click="emit('update:selected', index)"
       >

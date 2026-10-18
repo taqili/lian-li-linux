@@ -2,7 +2,7 @@ import type { PlaylistConfig } from "@/types";
 import { playableKind } from "@/utils/mediaPicker";
 
 /** Limits mirror `lianli_shared::playlist`. */
-export const PLAYLIST_MAX_ITEMS = 500;
+export const PLAYLIST_MAX_ITEMS = 200;
 export const PLAYLIST_MAX_SECONDS = 3600;
 
 export function defaultPlaylist(): PlaylistConfig {

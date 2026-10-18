@@ -208,7 +208,11 @@ fn playlist_prepares_a_live_renderer_on_the_lancool_207_in_both_orientations() {
         let lianli_media::MediaAssetKind::Custom { asset } = asset else {
             panic!("playlist did not prepare a live renderer");
         };
-        assert_eq!(asset.render_fps(), 4.0, "a stills-only playlist ticked at video rate");
+        assert_eq!(
+            asset.render_fps(),
+            4.0,
+            "a stills-only playlist ticked at video rate"
+        );
         let (width, height) = render_dimensions(&screen, orientation);
         assert_eq!(
             (asset.canvas_width(), asset.canvas_height()),
@@ -222,4 +226,30 @@ fn playlist_prepares_a_live_renderer_on_the_lancool_207_in_both_orientations() {
             "unchanged still re-sent"
         );
     }
+}
+
+#[test]
+fn playlist_with_a_missing_item_still_prepares_and_validates() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let still = temp.path().join("present.png");
+    let img: RgbImage = ImageBuffer::from_pixel(16, 16, Rgb([9, 9, 9]));
+    img.save(&still).unwrap();
+    let cfg: lianli_shared::config::LcdConfig = serde_json::from_value(serde_json::json!({
+        "type": "playlist",
+        "serial": "panel",
+        "path": null,
+        "fps": 30,
+        "rgb": null,
+        "orientation": 0,
+        "playlist": {"items": [temp.path().join("deleted.png"), still]}
+    }))
+    .unwrap();
+    cfg.validate().unwrap();
+    let screen = ScreenInfo::LANCOOL_207;
+    let asset =
+        lianli_media::prepare_media_asset(&cfg, 30.0, &screen, screen.h264, &[], &[], false);
+    assert!(matches!(
+        asset,
+        Ok(lianli_media::MediaAssetKind::Custom { .. })
+    ));
 }

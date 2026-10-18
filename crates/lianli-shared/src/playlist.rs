@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub const MAX_ITEMS: usize = 500;
+/// Several LCDs and saved profiles share a 1024 and 4096 media-reference budget.
+pub const MAX_ITEMS: usize = 200;
 pub const DEFAULT_IMAGE_SECONDS: u32 = 10;
 pub const MAX_SECONDS: u32 = 3600;
 

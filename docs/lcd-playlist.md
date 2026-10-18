@@ -18,7 +18,9 @@ playlist runs in the daemon, so it keeps playing when the app is closed.
   add it again to pick up new files.
 - Items play in list order and loop. **Shuffle** randomises the order on every
   pass without playing the same item twice in a row.
-- A playlist holds up to 500 items. Duplicate paths are ignored.
+- A playlist holds up to 200 items, which keeps several playlists and saved
+  profiles within the app's limit on referenced media files. Duplicate paths
+  are ignored.
 
 ### Timing
 
@@ -32,11 +34,12 @@ GIFs and videos otherwise play through once before the next item. A playlist
 with a single item keeps playing it without reloading. **FPS** caps GIF and
 video playback (at most 60).
 
-The next item is decoded in the background while the current one plays, so the
-switch is immediate. If an item cannot be played, it is skipped with one
-warning in the daemon log and the screen keeps showing the current item.
-Every file must exist when the configuration is saved, as with other media
-types.
+The next item starts loading in the background a few seconds before the
+current image ends, or when a GIF or video finishes, and the current item stays
+on screen until it is ready. An item that is missing or cannot be played is
+skipped, with one warning in the daemon log, and retried after 30 seconds,
+then progressively less often up to every 10 minutes. The playlist only fails
+as a whole when none of its first eight items can be played.
 
 **Fit**, **Fill** and **Stretch** work as for single files. Zoom and dragging
 are not available for playlists.
@@ -89,6 +92,10 @@ cd lian-li-linux/packaging/archlinux/fork
 makepkg -si
 systemctl --user restart lianli-daemon.service
 ```
+
+If you run the daemon in system mode, restart `lianli-daemon-system.service`
+with `sudo systemctl restart` instead. Restart the Lian Li Linux app as well so
+it picks up the new interface.
 
 Run `git pull` and then `makepkg -si` in the same folder to update.
 

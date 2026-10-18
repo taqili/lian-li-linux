@@ -118,20 +118,6 @@ impl LcdConfig {
                 }
             }
         }
-        if self.media_type == MediaType::Playlist {
-            if let Some(path) = self
-                .playlist
-                .iter()
-                .flat_map(|playlist| &playlist.items)
-                .find(|path| !path.exists())
-            {
-                bail!(
-                    "LCD[{}] playlist item '{}' does not exist",
-                    self.device_id(),
-                    path.display()
-                );
-            }
-        }
         Ok(())
     }
 

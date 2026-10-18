@@ -4,6 +4,8 @@ use crate::playlist::PlaylistItemKind;
 use crate::template::{LcdTemplate, TemplateBackground, WidgetKind};
 use crate::ui_message::{UiError, UiMessage};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::path::Path;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,7 +60,12 @@ pub fn stored_lcd_dependencies(config: &LcdConfig) -> Vec<AssetDependency> {
             kind: AssetKind::Font,
         });
     }
-    dependencies.extend(playlist_dependencies(config, &owner));
+    // An active playlist's items are already listed by `lcd_dependencies`;
+    // callers combine both, and listing them twice would halve the shared
+    // dependency budget.
+    if config.media_type != MediaType::Playlist {
+        dependencies.extend(playlist_dependencies(config, &owner));
+    }
     dependencies
 }
 
@@ -392,5 +399,42 @@ mod tests {
         assert!(validate_dependency_input(&[lcd.clone()], &[]).is_err());
         lcd.path = Some("x".repeat(4097).into());
         assert!(validate_dependency_paths(&lcd_dependencies(&lcd, &[]).unwrap()).is_err());
+    }
+
+    #[test]
+    fn playlist_items_are_listed_once_and_kept_when_dormant() {
+        let mut lcd: LcdConfig = serde_json::from_value(serde_json::json!({
+            "type": "playlist", "serial": "panel", "path": null, "fps": null, "rgb": null,
+            "orientation": 0,
+            "playlist": {"items": ["/m/a.png", "/m/b.gif", "/m/c.mp4"]}
+        }))
+        .unwrap();
+        let combined: Vec<_> = lcd_dependencies(&lcd, &[])
+            .unwrap()
+            .into_iter()
+            .chain(stored_lcd_dependencies(&lcd))
+            .map(|dependency| (dependency.path, dependency.kind))
+            .collect();
+        assert_eq!(
+            combined,
+            [
+                ("/m/a.png".into(), AssetKind::Image),
+                ("/m/b.gif".into(), AssetKind::Gif),
+                ("/m/c.mp4".into(), AssetKind::Video),
+            ]
+        );
+
+        lcd.media_type = MediaType::Color;
+        lcd.rgb = Some([0, 0, 0]);
+        assert_eq!(stored_lcd_dependencies(&lcd).len(), 3);
+
+        let mut rewritten = lcd.clone();
+        map_lcd_paths(&mut rewritten, |path| {
+            *path = Path::new("/managed").join(path.file_name().unwrap())
+        });
+        assert_eq!(
+            rewritten.playlist.unwrap().items[2],
+            Path::new("/managed/c.mp4")
+        );
     }
 }

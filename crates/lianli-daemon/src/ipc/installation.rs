@@ -25,17 +25,20 @@ fn needs_media_tools(state: &super::DaemonState) -> bool {
     use lianli_shared::template::WidgetKind;
     state.config.as_ref().is_some_and(|config| {
         config.lcds.iter().any(|lcd| {
-            matches!(
-                lcd.media_type,
-                MediaType::Video | MediaType::Gif | MediaType::Playlist
-            ) || (lcd.media_type == MediaType::Custom
-                && state.user_templates.iter().any(|template| {
-                    Some(template.id.as_str()) == lcd.template_id.as_deref()
-                        && template
-                            .widgets
-                            .iter()
-                            .any(|widget| matches!(widget.kind, WidgetKind::Video { .. }))
-                }))
+            matches!(lcd.media_type, MediaType::Video | MediaType::Gif)
+                || (lcd.media_type == MediaType::Playlist
+                    && lcd.playlist.iter().flat_map(|p| &p.items).any(|path| {
+                        lianli_shared::playlist::PlaylistItemKind::from_path(path)
+                            != Some(lianli_shared::playlist::PlaylistItemKind::Image)
+                    }))
+                || (lcd.media_type == MediaType::Custom
+                    && state.user_templates.iter().any(|template| {
+                        Some(template.id.as_str()) == lcd.template_id.as_deref()
+                            && template
+                                .widgets
+                                .iter()
+                                .any(|widget| matches!(widget.kind, WidgetKind::Video { .. }))
+                    }))
         })
     }) || state
         .telemetry
