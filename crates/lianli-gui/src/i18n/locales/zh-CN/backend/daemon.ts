@@ -108,7 +108,7 @@ const messages: typeof en = {
   },
   playlist: {
     deviceIdTooLong: "LCD 设备 ID 过长",
-    noneActive: "该屏幕上没有正在播放的播放列表",
+    noneActive: "没有屏幕正在播放播放列表",
     unconfirmed: "播放列表命令未确认：{error}",
   },
   lcd: {

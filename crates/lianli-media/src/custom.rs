@@ -175,11 +175,12 @@ impl CustomAsset {
         }))
         .map_err(|error| MediaError::InvalidConfig(error.to_string()))?;
         // Still images only need ticks fine enough to honour hold times and
-        // the clock; crossfades need a smooth frame rate while they run.
+        // the clock. A crossfade between stills looks smooth at 15 fps, which
+        // keeps H.264 panels, re-encoding every tick, from running at video rates.
         let fps = if config.has_motion() {
             fps.clamp(1.0, 60.0)
         } else if config.transition.crossfade {
-            fps.clamp(1.0, 30.0)
+            fps.clamp(1.0, 15.0)
         } else {
             fps.clamp(1.0, 4.0)
         };

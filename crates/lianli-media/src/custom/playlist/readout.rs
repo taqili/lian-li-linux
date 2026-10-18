@@ -91,6 +91,12 @@ pub(super) struct Readout {
 
 impl Readout {
     fn new(slot: &ReadoutSlot, sensors: &[SensorInfo]) -> Option<Self> {
+        Self::build(slot, sensors, true)
+    }
+
+    /// `report` is false for previews, which are rebuilt every few seconds
+    /// and would otherwise repeat the same warnings.
+    fn build(slot: &ReadoutSlot, sensors: &[SensorInfo], report: bool) -> Option<Self> {
         let kind = slot.kind;
         if kind == ReadoutKind::Off {
             return None;
@@ -108,7 +114,7 @@ impl Readout {
             .clone()
             .filter(|label| !label.trim().is_empty())
             .unwrap_or_else(|| default_label(kind).to_string());
-        if source.is_none() && kind != ReadoutKind::Clock {
+        if report && source.is_none() && kind != ReadoutKind::Clock {
             warn!("playlist {label} readout: no sensor found");
         }
         Some(Self {
@@ -126,7 +132,7 @@ impl Readout {
             color: VALUE_COLOR,
             sparkline: slot.sparkline && kind != ReadoutKind::Clock,
             history: VecDeque::new(),
-            failed: false,
+            failed: !report,
             rendered: None,
         })
     }
@@ -331,6 +337,8 @@ impl Overlay {
 }
 
 /// Current readouts for `config`, sampled once, for the settings preview.
+/// Command sources are not run: previews are requested without the write
+/// guard, so they must not execute anything a client supplies.
 pub(crate) fn preview(config: &TemperatureOverlay, sensors: &[SensorInfo]) -> Vec<ReadoutPreview> {
     let style = Style {
         fahrenheit: config.fahrenheit,
@@ -342,14 +350,24 @@ pub(crate) fn preview(config: &TemperatureOverlay, sensors: &[SensorInfo]) -> Ve
         .effective_slots()
         .iter()
         .map(|slot| {
-            Readout::new(slot, sensors).map_or_else(ReadoutPreview::default, |mut readout| {
-                readout.sample(Instant::now(), sensors, style);
-                ReadoutPreview {
-                    label: readout.label,
-                    text: readout.text,
-                    sensor: readout.sensor_name,
-                }
-            })
+            Readout::build(slot, sensors, false).map_or_else(
+                ReadoutPreview::default,
+                |mut readout| {
+                    if matches!(slot.source, Some(SensorSourceConfig::Command { .. })) {
+                        return ReadoutPreview {
+                            label: readout.label,
+                            text: UNAVAILABLE.into(),
+                            sensor: None,
+                        };
+                    }
+                    readout.sample(Instant::now(), sensors, style);
+                    ReadoutPreview {
+                        label: readout.label,
+                        text: readout.text,
+                        sensor: readout.sensor_name,
+                    }
+                },
+            )
         })
         .collect()
 }
@@ -625,5 +643,30 @@ mod tests {
         assert_eq!(previews[0].text, "50°C");
         assert_eq!(previews[1].text, UNAVAILABLE);
         assert_eq!(previews[1].label, "GPU");
+    }
+
+    #[test]
+    fn previews_never_run_command_sources() {
+        let root = tempfile::tempdir().unwrap();
+        let marker = root.path().join("ran");
+        let overlay = TemperatureOverlay {
+            slots: Some([
+                ReadoutSlot {
+                    kind: ReadoutKind::Sensor,
+                    label: Some("CMD".into()),
+                    source: Some(SensorSourceConfig::Command {
+                        cmd: format!("touch {} && echo 5", marker.display()),
+                    }),
+                    ..Default::default()
+                },
+                constant(ReadoutKind::CpuTemp, 40.0),
+            ]),
+            ..Default::default()
+        };
+        let previews = preview(&overlay, &[]);
+        assert_eq!(previews[0].label, "CMD");
+        assert_eq!(previews[0].text, UNAVAILABLE);
+        assert_eq!(previews[1].text, "40°C");
+        assert!(!marker.exists(), "a preview ran a client-supplied command");
     }
 }

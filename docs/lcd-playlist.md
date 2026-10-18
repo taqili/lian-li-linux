@@ -82,12 +82,13 @@ are not available for playlists.
 
 ### Resource use
 
-Playlists of images only wake the renderer four times a second, or up to 30
-times a second when crossfades are on, and frames are re-sent only when
+Playlists of images only wake the renderer four times a second, or 15 times a
+second when crossfades are on, and frames are re-sent only when
 something changes. GIFs and videos are decoded and encoded live instead of
 being prepared in advance, which keeps memory bounded for long clips but costs
 more CPU than a single video. Short clips that fit in memory are encoded once
-per loop and reused until a readout changes. Lower **FPS** if the daemon's CPU
+per loop and reused until a readout changes, unless **H.264** is selected,
+which re-encodes every frame. Lower **FPS** if the daemon's CPU
 use matters more than smoothness.
 
 ## Readouts
@@ -145,7 +146,8 @@ own items or show only the readouts, enlarged to fill half of the screen each.
 
 Programs are matched by process name or executable file name, ignoring case,
 for example `steam` or `Cyberpunk2077.exe`. Running programs are checked every
-five seconds. Games that only run on another operating system, such as on a
+five seconds, so a switch can take up to about ten seconds after a program
+starts or quits. Games that only run on another operating system, such as on a
 separate Windows boot, cannot be detected.
 
 ### Dimming

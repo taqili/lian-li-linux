@@ -87,6 +87,18 @@ fn wait_for_loader(playlist: &Playlist) {
     }
 }
 
+/// Advances at a fixed time until a load lands, waiting out any load that a
+/// command set aside first.
+fn advance_until_switched(playlist: &mut Playlist, at: Instant, font: &FontVec) {
+    let before = current(playlist);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while current(playlist) == before {
+        assert!(Instant::now() < deadline, "the item never switched");
+        wait_for_loader(playlist);
+        playlist.advance(at, font);
+    }
+}
+
 fn current(playlist: &Playlist) -> String {
     playlist
         .active
@@ -469,12 +481,10 @@ fn pause_freezes_timing_and_next_previous_move_through_history() {
     assert_eq!(current(&playlist), "three.png");
 
     playlist.command(PlaylistAction::Previous, start + Duration::from_secs(11));
-    wait_for_loader(&playlist);
-    playlist.advance(start + Duration::from_secs(11), &font);
+    advance_until_switched(&mut playlist, start + Duration::from_secs(11), &font);
     assert_eq!(current(&playlist), "two.png");
     playlist.command(PlaylistAction::Previous, start + Duration::from_secs(11));
-    wait_for_loader(&playlist);
-    playlist.advance(start + Duration::from_secs(11), &font);
+    advance_until_switched(&mut playlist, start + Duration::from_secs(11), &font);
     assert_eq!(current(&playlist), "one.png");
 }
 

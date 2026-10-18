@@ -63,7 +63,11 @@ fn probe_fps(path: &Path, control: &PreparationControl) -> Result<Option<f32>, M
         return Ok(fps);
     }
     let fps = run_probe_fps(path, control)?;
-    remember_probe(path, |probed| probed.fps = Some(fps));
+    // A failed probe may be a missing ffprobe or a timeout, so only a found
+    // rate is remembered.
+    if fps.is_some() {
+        remember_probe(path, |probed| probed.fps = Some(fps));
+    }
     Ok(fps)
 }
 

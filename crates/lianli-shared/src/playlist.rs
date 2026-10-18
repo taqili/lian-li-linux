@@ -354,8 +354,12 @@ pub struct TimeWindow {
 
 fn minute_of_day(text: &str) -> Option<u32> {
     let (hours, minutes) = text.split_once(':')?;
+    let digits = |part: &str| part.bytes().all(|b| b.is_ascii_digit());
+    if !(1..=2).contains(&hours.len()) || minutes.len() != 2 || !digits(hours) || !digits(minutes) {
+        return None;
+    }
     let (hours, minutes): (u32, u32) = (hours.parse().ok()?, minutes.parse().ok()?);
-    (hours < 24 && minutes < 60 && text.len() <= 5).then_some(hours * 60 + minutes)
+    (hours < 24 && minutes < 60).then_some(hours * 60 + minutes)
 }
 
 impl TimeWindow {
@@ -833,6 +837,10 @@ mod tests {
         }
         .validate()
         .is_err());
+        assert_eq!(minute_of_day("9:05"), Some(9 * 60 + 5));
+        for bad in ["9:5", "09:5", "+9:05", "009:05", "09:05 ", ":05"] {
+            assert_eq!(minute_of_day(bad), None, "{bad:?} was accepted");
+        }
     }
 
     #[test]

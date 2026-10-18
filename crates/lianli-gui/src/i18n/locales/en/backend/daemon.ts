@@ -106,7 +106,7 @@ export default {
   },
   playlist: {
     deviceIdTooLong: "LCD device ID is too long",
-    noneActive: "No playlist is playing on that screen",
+    noneActive: "No screen is playing a playlist",
     unconfirmed: "Playlist command not confirmed: {error}",
   },
   lcd: {

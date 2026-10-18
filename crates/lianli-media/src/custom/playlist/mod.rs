@@ -118,6 +118,7 @@ pub(crate) struct Playlist {
     first_pass: Option<Duration>,
     loader: Option<Loader>,
     forced: Option<Entry>,
+    loader_stale: bool,
     control: PreparationControl,
     health: HashMap<PathBuf, Health>,
     idle_until: Option<Instant>,
@@ -201,6 +202,7 @@ impl Playlist {
             first_pass: None,
             loader: None,
             forced: None,
+            loader_stale: false,
             control: PreparationControl::new(control.hardware_video),
             health: HashMap::new(),
             idle_until: None,
@@ -296,6 +298,13 @@ impl Playlist {
         if unchanged || rebuilt.is_empty() {
             return;
         }
+        let alternate = &self.entries[1];
+        self.health.retain(|path, _| {
+            rebuilt
+                .iter()
+                .chain(alternate)
+                .any(|entry| &entry.item.path == path)
+        });
         self.orders[0] = (0..rebuilt.len()).collect();
         self.entries[0] = rebuilt;
     }
@@ -337,7 +346,12 @@ impl Playlist {
                 return Some(entry);
             }
         }
-        self.idle_until = self.health.values().filter_map(|h| h.retry_at).min();
+        self.idle_until = self
+            .health
+            .values()
+            .filter_map(|h| h.retry_at)
+            .filter(|at| *at > now)
+            .min();
         None
     }
 
@@ -471,9 +485,10 @@ impl Playlist {
             }
         }
         let previous = std::mem::replace(&mut self.active, next);
-        let fades = self
-            .crossfade
-            .filter(|_| previous.pixels().is_some() || self.active.pixels().is_some());
+        let fades = self.crossfade.filter(|_| {
+            self.paused_at.is_none()
+                && (previous.pixels().is_some() || self.active.pixels().is_some())
+        });
         if let Some(old) = self.fade.take() {
             retire(old.from);
         }
@@ -505,6 +520,16 @@ impl Playlist {
     /// item keeps playing, so a slow load never blanks the screen.
     fn try_switch(&mut self, now: Instant) -> bool {
         if self.readouts_only() {
+            if self
+                .loader
+                .as_ref()
+                .is_some_and(|loader| loader.handle.is_finished())
+            {
+                if let Ok(Ok(unwanted)) = self.loader.take().expect("finished loader").handle.join()
+                {
+                    retire(unwanted);
+                }
+            }
             if matches!(self.active.content, Content::Blank) {
                 return false;
             }
@@ -524,15 +549,19 @@ impl Playlist {
             .handle
             .join()
             .unwrap_or_else(|_| Err(MediaError::Ffmpeg("Playlist loader panicked".into())));
+        let stale = std::mem::take(&mut self.loader_stale);
         let mut loaded = match result {
-            Ok(loaded) if loaded.group == self.group => loaded,
-            Ok(stale) => {
-                retire(stale);
+            Ok(loaded) if loaded.group == self.group && !stale => loaded,
+            Ok(unwanted) => {
+                retire(unwanted);
                 self.start_loading(now);
                 return false;
             }
             Err(error) => {
-                self.mark_failed(&loader.entry.item.path, &error, now);
+                if !stale {
+                    self.mark_failed(&loader.entry.item.path, &error, now);
+                    self.going_back = false;
+                }
                 self.start_loading(now);
                 return false;
             }
@@ -574,12 +603,10 @@ impl Playlist {
             Group::Main
         };
         if group != self.group {
+            // A load for the other set is retired off this thread when it finishes.
             self.group = group;
-            if self.loader.as_ref().is_some_and(|l| l.entry.group != group) {
-                // The stale load finishes and drops its result on its own thread.
-                self.loader = None;
-            }
             self.forced = None;
+            self.going_back = false;
             self.history.clear();
         }
         let dim = self
@@ -632,8 +659,9 @@ impl Playlist {
             PlaylistAction::Next => self.skip = true,
             PlaylistAction::Previous => {
                 if let Some(previous) = self.history.pop() {
-                    // A load already under way finishes and drops its result on its own thread.
-                    self.loader = None;
+                    // A load already under way is waited for and set aside, so
+                    // repeated presses never stack up decoders.
+                    self.loader_stale = self.loader.is_some();
                     self.forced = Some(previous);
                     self.going_back = true;
                     self.skip = true;

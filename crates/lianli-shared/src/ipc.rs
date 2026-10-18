@@ -316,6 +316,10 @@ impl IpcRequest {
             | Self::RenderTemplatePreview { .. }
             | Self::RenderSensorPreview { .. }
             | Self::PreviewPlaylistReadouts { .. }
+            | Self::PlaylistControl {
+                action: crate::playlist::PlaylistAction::Status,
+                ..
+            }
             | Self::Ping
             | Self::GetDaemonInfo
             | Self::GetInstallationHealth

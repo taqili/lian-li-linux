@@ -28,8 +28,9 @@ fn truncated(name: &str) -> &str {
     &name[..end]
 }
 
-/// True when any process's short name or executable file name matches one
-/// of `names`, ignoring case.
+/// True when any process's short name matches one of `names`, ignoring case.
+/// Names longer than the kernel's 15-byte short name are confirmed against
+/// the executable file name when it can be read.
 pub(super) fn any_process_running(proc_root: &Path, names: &[String]) -> bool {
     let names: Vec<String> = names.iter().map(|name| normalized(name)).collect();
     if names.is_empty() {
@@ -47,23 +48,31 @@ pub(super) fn any_process_running(proc_root: &Path, names: &[String]) -> bool {
             continue;
         }
         let directory = entry.path();
-        if let Ok(comm) = std::fs::read_to_string(directory.join("comm")) {
-            let comm = normalized(&comm);
-            if names.iter().any(|name| truncated(name) == comm) {
-                return true;
+        let Ok(comm) = std::fs::read_to_string(directory.join("comm")) else {
+            continue;
+        };
+        let comm = normalized(&comm);
+        for name in &names {
+            if truncated(name) != comm {
+                continue;
             }
-        }
-        if let Ok(cmdline) = std::fs::read(directory.join("cmdline")) {
-            let first = cmdline.split(|&b| b == 0).next().unwrap_or_default();
-            let program = String::from_utf8_lossy(first);
-            let base = program.rsplit(['/', '\\']).next().unwrap_or_default();
-            let base = normalized(base);
-            if !base.is_empty() && names.contains(&base) {
+            // A full-length short name may be a truncated longer one, so the
+            // executable name tells programs sharing their first 15 bytes apart.
+            if name.len() <= COMM_LEN || executable_name(&directory).is_none_or(|exe| &exe == name)
+            {
                 return true;
             }
         }
     }
     false
+}
+
+fn executable_name(process: &Path) -> Option<String> {
+    let cmdline = std::fs::read(process.join("cmdline")).ok()?;
+    let first = cmdline.split(|&b| b == 0).next()?;
+    let program = String::from_utf8_lossy(first);
+    let base = normalized(program.rsplit(['/', '\\']).next()?);
+    (!base.is_empty()).then_some(base)
 }
 
 /// Polls for the listed programs on its own thread, so the renderer only
@@ -157,6 +166,10 @@ mod tests {
         assert!(running("cyberpunk2077.exe"));
         assert!(running("Cyberpunk2077.exe "));
         assert!(!running("cyberpunk"));
+        assert!(
+            !running("Cyberpunk2077.elf"),
+            "a program sharing the first 15 bytes matched"
+        );
         assert!(!running("discord"));
         assert!(!any_process_running(root.path(), &[]));
     }

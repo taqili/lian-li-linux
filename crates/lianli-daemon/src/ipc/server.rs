@@ -317,6 +317,23 @@ fn handle_connection(
     Ok(())
 }
 
+/// Sensor list for readout previews. The GUI polls previews every few
+/// seconds, and enumeration walks hwmon and may start nvidia-smi.
+fn preview_sensors() -> Vec<lianli_shared::sensors::SensorInfo> {
+    const REFRESH: Duration = Duration::from_secs(30);
+    static CACHE: Mutex<Option<(Instant, Vec<lianli_shared::sensors::SensorInfo>)>> =
+        Mutex::new(None);
+    let mut cache = CACHE.lock();
+    if let Some((at, sensors)) = cache.as_ref() {
+        if at.elapsed() < REFRESH {
+            return sensors.clone();
+        }
+    }
+    let sensors = lianli_shared::sensors::enumerate_sensors();
+    *cache = Some((Instant::now(), sensors.clone()));
+    sensors
+}
+
 fn handle_request(
     request: IpcRequest,
     state: &Arc<Mutex<DaemonState>>,
@@ -576,7 +593,7 @@ fn handle_request(
             }
             match reply_rx.recv_timeout(Duration::from_secs(3)) {
                 Ok(statuses) if statuses.is_empty() => IpcResponse::error_ui(
-                    "No playlist is playing on that screen",
+                    "No screen is playing a playlist",
                     UiMessage::new("daemon.playlist.noneActive"),
                 ),
                 Ok(statuses) => IpcResponse::ok(
@@ -593,12 +610,9 @@ fn handle_request(
                 ),
             }
         }
-        IpcRequest::PreviewPlaylistReadouts { overlay } => {
-            IpcResponse::ok(lianli_media::playlist_readout_preview(
-                &overlay,
-                &lianli_shared::sensors::enumerate_sensors(),
-            ))
-        }
+        IpcRequest::PreviewPlaylistReadouts { overlay } => IpcResponse::ok(
+            lianli_media::playlist_readout_preview(&overlay, &preview_sensors()),
+        ),
         IpcRequest::StartPixelClean {
             device_id,
             duration_minutes,
