@@ -11,6 +11,7 @@ pub mod installation;
 pub mod ipc;
 pub mod media;
 pub mod media_dependencies;
+pub mod playlist;
 pub mod profile;
 pub mod rgb;
 pub mod screen;

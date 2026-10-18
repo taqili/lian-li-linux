@@ -19,20 +19,36 @@ pub fn find_default_cpu_temp(sensors: &[SensorInfo]) -> Option<SensorSource> {
 
     cpu_temps
         .iter()
-        .find(|s| {
-            if let SensorSource::Hwmon { label, .. } = &s.source {
-                let l = label.to_lowercase();
-                l.contains("tctl") || l.contains("package id 0")
-            } else {
-                false
-            }
-        })
+        .find(|s| has_label(s, &["tctl", "package id 0"], "Control Temp"))
         .or_else(|| cpu_temps.first())
         .map(|s| s.source.clone())
 }
 
+/// Enumerated hwmon sources store the attribute prefix (`temp1`), so the
+/// sysfs label is only visible through the display name derived from it.
+fn has_label(sensor: &SensorInfo, labels: &[&str], display: &str) -> bool {
+    let SensorSource::Hwmon { label, .. } = &sensor.source else {
+        return false;
+    };
+    let label = label.to_lowercase();
+    labels.iter().any(|needle| label.contains(needle))
+        || sensor
+            .sensor_name
+            .as_ref()
+            .is_some_and(|name| name.get_sensor_name() == display)
+}
+
+fn hwmon_device(sensor: &SensorInfo) -> Option<&str> {
+    match &sensor.source {
+        SensorSource::Hwmon { device_path, .. } if !device_path.is_empty() => Some(device_path),
+        _ => None,
+    }
+}
+
 /// Picks the most likely "GPU edge temp" sensor — NVIDIA first (if present),
-/// then amdgpu's `edge` label, then any GPU-ish hwmon temp.
+/// then amdgpu's `edge` label, then any GPU-ish hwmon temp. When an APU's
+/// integrated graphics also reports an edge temperature, the card that
+/// reports a junction temperature is the discrete one and wins.
 pub fn find_default_gpu_temp(sensors: &[SensorInfo]) -> Option<SensorSource> {
     if let Some(s) = sensors.iter().find(|s| {
         matches!(
@@ -55,15 +71,22 @@ pub fn find_default_gpu_temp(sensors: &[SensorInfo]) -> Option<SensorSource> {
                 )
         })
         .collect();
-    gpu_temps
-        .iter()
-        .find(|s| {
-            if let SensorSource::Hwmon { label, .. } = &s.source {
-                label.to_lowercase().contains("edge")
-            } else {
-                false
-            }
+    let discrete = |device: Option<&str>| {
+        device.is_some_and(|device| {
+            gpu_temps.iter().any(|s| {
+                hwmon_device(s) == Some(device) && has_label(s, &["junction"], "Hotspot Temp")
+            })
         })
+    };
+    let edges: Vec<&&SensorInfo> = gpu_temps
+        .iter()
+        .filter(|s| has_label(s, &["edge"], "Edge Temp"))
+        .collect();
+    edges
+        .iter()
+        .find(|s| discrete(hwmon_device(s)))
+        .or_else(|| edges.first())
+        .copied()
         .or_else(|| gpu_temps.first())
         .map(|s| s.source.clone())
 }
@@ -220,5 +243,69 @@ fn root_disk_device() -> Option<String> {
         Some(partition)
     } else {
         Some(parent_name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sensors::SensorName;
+
+    fn temp(name: &str, prefix: &str, display: &str, device: &str) -> SensorInfo {
+        SensorInfo {
+            source: SensorSource::Hwmon {
+                name: name.into(),
+                label: prefix.into(),
+                device_path: device.into(),
+            },
+            sensor_name: Some(SensorName {
+                device_name: device.into(),
+                sensor_name: display.into(),
+            }),
+            display_name: None,
+            divider: 1000,
+            unit: Unit::C,
+            current_value: None,
+        }
+    }
+
+    fn device_of(source: Option<SensorSource>) -> String {
+        match source {
+            Some(SensorSource::Hwmon {
+                label, device_path, ..
+            }) => format!("{device_path}/{label}"),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn discrete_gpu_edge_wins_over_an_earlier_integrated_gpu() {
+        let sensors = [
+            temp("amdgpu", "temp1", "Edge Temp", "0000:0f:00.0"),
+            temp("amdgpu", "temp1", "Edge Temp", "0000:03:00.0"),
+            temp("amdgpu", "temp2", "Hotspot Temp", "0000:03:00.0"),
+            temp("amdgpu", "temp3", "VRAM Temp", "0000:03:00.0"),
+        ];
+        assert_eq!(
+            device_of(find_default_gpu_temp(&sensors)),
+            "0000:03:00.0/temp1"
+        );
+    }
+
+    #[test]
+    fn lone_integrated_gpu_and_cpu_control_temp_are_still_found() {
+        let sensors = [
+            temp("k10temp", "temp3", "Temp Die 1", "0000:00:18.3"),
+            temp("k10temp", "temp1", "Control Temp", "0000:00:18.3"),
+            temp("amdgpu", "temp1", "Edge Temp", "0000:0f:00.0"),
+        ];
+        assert_eq!(
+            device_of(find_default_gpu_temp(&sensors)),
+            "0000:0f:00.0/temp1"
+        );
+        assert_eq!(
+            device_of(find_default_cpu_temp(&sensors)),
+            "0000:00:18.3/temp1"
+        );
     }
 }

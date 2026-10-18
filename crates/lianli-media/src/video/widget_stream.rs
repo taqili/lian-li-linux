@@ -57,6 +57,7 @@ struct Frames {
     cache: Option<Cache>,
     finished: bool,
     error: Option<String>,
+    first_pass_frames: Option<usize>,
 }
 
 type SharedFrames = Arc<(Mutex<Frames>, Condvar)>;
@@ -68,6 +69,7 @@ pub(crate) struct VideoStream {
     current: Option<Arc<TimedFrame>>,
     next: Option<Instant>,
     started: Option<Instant>,
+    shown: usize,
     queue_capacity: usize,
     looping: bool,
     recycle: bool,
@@ -88,6 +90,7 @@ struct Producer {
     capacity: usize,
     bytes: usize,
     candidate: Option<Cache>,
+    emitted: usize,
 }
 
 impl Producer {
@@ -107,6 +110,7 @@ impl Producer {
 
     fn emit(&mut self, image: RgbaImage, duration: Duration) -> Result<(), MediaError> {
         self.check()?;
+        self.emitted += 1;
         let frame = Arc::new(TimedFrame { image, duration });
         if let Some(cache) = &mut self.candidate {
             if cache.frames.len() < CACHE_FRAMES
@@ -174,6 +178,7 @@ impl VideoStream {
             capacity,
             bytes,
             candidate: Some(Cache::default()),
+            emitted: 0,
         };
         let recycle = !super::widget_animation::is_animation(path);
         let path = path.to_owned();
@@ -199,6 +204,7 @@ impl VideoStream {
             current: None,
             next: None,
             started: None,
+            shown: 1,
             queue_capacity: capacity,
             looping,
             recycle,
@@ -304,6 +310,7 @@ impl VideoStream {
                 break;
             };
             next += frame.duration;
+            self.shown += 1;
             if let Some(old) = self.current.replace(frame) {
                 if self.recycle && frames.ready.len() + frames.reusable.len() < self.queue_capacity
                 {
@@ -321,6 +328,23 @@ impl VideoStream {
         });
         self.shared.1.notify_all();
         Ok(changed)
+    }
+
+    /// True once every frame of the source has been on screen for its full
+    /// duration, whether or not the stream goes on to loop.
+    pub(crate) fn first_pass_complete(&self, now: Instant) -> bool {
+        let Some(started) = self.started else {
+            return false;
+        };
+        let frames = self.shared.0.lock();
+        if let Some(cache) = &frames.cache {
+            let total: Duration = cache.frames.iter().map(|frame| frame.duration).sum();
+            return now.saturating_duration_since(started) >= total;
+        }
+        frames
+            .first_pass_frames
+            .is_some_and(|count| self.shown >= count)
+            && self.next.is_some_and(|next| now >= next)
     }
 
     pub(crate) fn frame(&self) -> &RgbaImage {
@@ -388,6 +412,9 @@ fn produce(
             if count == 0 {
                 return Err(MediaError::EmptyVideo);
             }
+        }
+        if first_pass {
+            producer.shared.0.lock().first_pass_frames = Some(producer.emitted);
         }
         if producer.finish_cache() || !looping {
             return Ok(());

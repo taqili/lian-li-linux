@@ -403,3 +403,57 @@ fn full_screen_video_template_prepares_without_retaining_the_clip() {
         .unwrap();
     assert!(!asset.render_frame(true).unwrap().unwrap().data.is_empty());
 }
+
+#[test]
+fn first_pass_completes_after_the_last_frame_whether_cached_or_streamed() {
+    let root = tempfile::tempdir().unwrap();
+    let cached_path = color_clip(root.path());
+    let mut cached = VideoStream::new(
+        &cached_path,
+        4.0,
+        (16, 8),
+        ImageFit::Stretch,
+        true,
+        &PreparationControl::new(false),
+    )
+    .unwrap();
+    let start = Instant::now();
+    assert!(!cached.first_pass_complete(start + Duration::from_secs(5)));
+    cached.advance(start).unwrap();
+    assert!(!cached.first_pass_complete(start + Duration::from_millis(999)));
+    assert!(cached.first_pass_complete(start + Duration::from_secs(1)));
+
+    let streamed_root = tempfile::tempdir().unwrap();
+    let streamed_path = repeated_color_clip(streamed_root.path(), 65);
+    let mut streamed = VideoStream::new(
+        &streamed_path,
+        4.0,
+        (16, 8),
+        ImageFit::Stretch,
+        true,
+        &PreparationControl::new(false),
+    )
+    .unwrap();
+    assert!(streamed.shared.0.lock().cache.is_none());
+    let start = Instant::now();
+    streamed.advance(start).unwrap();
+    for index in 1..260 {
+        wait_for_frame(&streamed);
+        let now = start + Duration::from_millis(250 * index);
+        streamed.advance(now).unwrap();
+        assert!(
+            !streamed.first_pass_complete(now),
+            "frame {index} of 260 ended the pass"
+        );
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while streamed.shared.0.lock().first_pass_frames.is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "decoder never finished its first pass"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(streamed.shared.0.lock().first_pass_frames, Some(260));
+    assert!(streamed.first_pass_complete(start + Duration::from_millis(250 * 260)));
+}

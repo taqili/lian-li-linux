@@ -138,6 +138,7 @@ fn prepare_media_asset_image_produces_static_even_when_h264_screen() {
         aio_512_frame: None,
         brightness: None,
         framing: Default::default(),
+        playlist: None,
     };
 
     let asset =
@@ -169,10 +170,56 @@ fn prepare_media_asset_color_produces_static_even_when_h264_screen() {
         aio_512_frame: None,
         brightness: None,
         framing: Default::default(),
+        playlist: None,
     };
 
     let asset =
         lianli_media::prepare_media_asset(&cfg, 30.0, &screen, screen.h264, &[], &[], false)
             .unwrap();
     assert!(matches!(asset, lianli_media::MediaAssetKind::Static { .. }));
+}
+
+#[test]
+fn playlist_prepares_a_live_renderer_on_the_lancool_207_in_both_orientations() {
+    let temp = tempfile::TempDir::new().unwrap();
+    let still = temp.path().join("wide.png");
+    let img: RgbImage = ImageBuffer::from_pixel(160, 90, Rgb([0, 0, 255]));
+    img.save(&still).unwrap();
+    for orientation in [0.0, 90.0] {
+        let cfg: lianli_shared::config::LcdConfig = serde_json::from_value(serde_json::json!({
+            "type": "playlist",
+            "serial": "panel",
+            "path": null,
+            "fps": 30,
+            "rgb": null,
+            "orientation": orientation,
+            "framing": {"fit": "contain"},
+            "playlist": {
+                "items": [still],
+                "overlay": {"cpu": true, "cpu_source": {"type": "constant", "value": 40}}
+            }
+        }))
+        .unwrap();
+        cfg.validate().unwrap();
+        let screen = ScreenInfo::LANCOOL_207;
+        let asset =
+            lianli_media::prepare_media_asset(&cfg, 30.0, &screen, screen.h264, &[], &[], false)
+                .unwrap();
+        let lianli_media::MediaAssetKind::Custom { asset } = asset else {
+            panic!("playlist did not prepare a live renderer");
+        };
+        assert_eq!(asset.render_fps(), 4.0, "a stills-only playlist ticked at video rate");
+        let (width, height) = render_dimensions(&screen, orientation);
+        assert_eq!(
+            (asset.canvas_width(), asset.canvas_height()),
+            (width, height)
+        );
+        let frame = asset.render_frame(true).unwrap().expect("first frame");
+        let decoded = image::load_from_memory(&frame.data).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (720, 1472));
+        assert!(
+            asset.render_frame(false).unwrap().is_none(),
+            "unchanged still re-sent"
+        );
+    }
 }

@@ -9,6 +9,21 @@
   Fan speed control, RGB/LED effects, LCD streaming, and sensor gauges for all Lian Li devices.
 </p>
 
+> [!NOTE]
+> **This is a fork.** Lian Li Linux is created and maintained by
+> [sgtaziz](https://github.com/sgtaziz) at
+> [sgtaziz/lian-li-linux](https://github.com/sgtaziz/lian-li-linux), and all
+> credit for the project belongs to its author and contributors. It is used
+> here under the MIT License, whose original copyright notice is kept in
+> [LICENSE](LICENSE).
+>
+> This fork ([taqili/lian-li-linux](https://github.com/taqili/lian-li-linux))
+> adds an LCD media playlist and Fit-mode CPU/GPU temperature readouts; see
+> [docs/lcd-playlist.md](docs/lcd-playlist.md). The fork's changes were written
+> with AI assistance, are not reviewed or supported by the upstream maintainer,
+> and should be reported here rather than upstream. Install it with
+> [packaging/archlinux/fork/PKGBUILD](packaging/archlinux/fork/PKGBUILD).
+
 ### AI Disclaimer
 
 Generative AI was used during development in two areas:

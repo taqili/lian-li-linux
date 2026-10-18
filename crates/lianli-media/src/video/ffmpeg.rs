@@ -48,6 +48,63 @@ fn probe_fps(path: &Path, control: &PreparationControl) -> Result<Option<f32>, M
     }))
 }
 
+/// Display size of the first video stream, after the rotation that ffmpeg
+/// applies automatically when decoding.
+pub(crate) fn probe_display_size(
+    path: &Path,
+    control: &PreparationControl,
+) -> Result<(u32, u32), MediaError> {
+    let mut cmd = Command::new("ffprobe");
+    cmd.args([
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height:stream_tags=rotate:stream_side_data=rotation",
+        "-of",
+        "default=noprint_wrappers=1",
+    ])
+    .arg(path);
+    let output = control.output(cmd, PROBE_TIMEOUT)?;
+    if !output.status.success() {
+        return Err(MediaError::Ffmpeg(format!(
+            "ffprobe could not read '{}': {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    parse_display_size(&String::from_utf8_lossy(&output.stdout))
+        .ok_or_else(|| MediaError::Ffmpeg(format!("'{}' has no video stream", path.display())))
+}
+
+fn parse_display_size(probe: &str) -> Option<(u32, u32)> {
+    let mut width = None;
+    let mut height = None;
+    let mut quarter_turn = false;
+    for line in probe.lines() {
+        let Some((key, value)) = line.trim().split_once('=') else {
+            continue;
+        };
+        match key {
+            "width" => width = value.parse::<u32>().ok().filter(|&w| w > 0),
+            "height" => height = value.parse::<u32>().ok().filter(|&h| h > 0),
+            "rotation" | "TAG:rotate" => {
+                quarter_turn |= value
+                    .parse::<f64>()
+                    .is_ok_and(|degrees| (degrees.abs().round() as i64) % 180 == 90);
+            }
+            _ => {}
+        }
+    }
+    let (width, height) = (width?, height?);
+    Some(if quarter_turn {
+        (height, width)
+    } else {
+        (width, height)
+    })
+}
+
 pub(crate) fn cap_fps_cancellable(
     path: &Path,
     target: f32,
@@ -202,4 +259,31 @@ fn filtered_rgba_command(
         "pipe:1",
     ]);
     command
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_display_size;
+
+    #[test]
+    fn quarter_turn_rotation_swaps_reported_dimensions() {
+        assert_eq!(
+            parse_display_size("width=320\nheight=180\n"),
+            Some((320, 180))
+        );
+        assert_eq!(
+            parse_display_size("width=320\nheight=180\nrotation=90\n"),
+            Some((180, 320))
+        );
+        assert_eq!(
+            parse_display_size("width=1920\nheight=1080\nTAG:rotate=270\n"),
+            Some((1080, 1920))
+        );
+        assert_eq!(
+            parse_display_size("width=1920\nheight=1080\nrotation=-180\n"),
+            Some((1920, 1080))
+        );
+        assert_eq!(parse_display_size("width=0\nheight=1080\n"), None);
+        assert_eq!(parse_display_size(""), None);
+    }
 }

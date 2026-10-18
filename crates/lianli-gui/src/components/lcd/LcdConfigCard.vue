@@ -16,7 +16,9 @@ import { useLcdScreensStore } from "@/stores/lcdScreens";
 import { useDeviceNamesStore } from "@/stores/deviceNames";
 import EditableName from "@/components/common/EditableName.vue";
 import { brightnessError } from "@/utils/brightnessControl";
-import { matchesMediaFile, pickMediaFile } from "@/utils/mediaPicker";
+import { matchesMediaFile, pickMediaFile, playableKind } from "@/utils/mediaPicker";
+import { appendItems, defaultPlaylist, fitArea, readoutBars, type Area } from "@/utils/playlist";
+import PlaylistEditor from "@/components/lcd/PlaylistEditor.vue";
 import SensorGaugeEditor from "@/components/lcd/SensorGaugeEditor.vue";
 import ColorPicker from "@/components/rgb/ColorPicker.vue";
 import OrientationPicker from "@/components/common/OrientationPicker.vue";
@@ -96,6 +98,7 @@ const mediaTypeOptions = computed(() => [
   { label: t("lcd.configCard.mediaTypeOptions.solidColor"), value: "color" },
   { label: t("lcd.configCard.mediaTypeOptions.sensorGauge"), value: "sensor" },
   { label: t("lcd.configCard.mediaTypeOptions.customTemplate"), value: "custom" },
+  { label: t("lcd.mediaTypes.playlist"), value: "playlist" },
 ]);
 
 function onMediaType(v: MediaType) {
@@ -105,8 +108,25 @@ function onMediaType(v: MediaType) {
   }
   props.entry.type = v;
   if (v === "sensor") ensureSensor();
+  if (v === "playlist" && !props.entry.playlist) {
+    props.entry.playlist = defaultPlaylist();
+    if (props.entry.path && playableKind(props.entry.path)) appendItems(props.entry.playlist, [props.entry.path]);
+    setFraming({ ...defaultFraming(), fit: "contain" }, false);
+  }
   config.markDirty();
 }
+
+const isPlaylist = computed(() => props.entry.type === "playlist");
+const playlistSelection = ref(0);
+const previewPath = computed(() => {
+  if (!isPlaylist.value) return props.entry.path;
+  const items = props.entry.playlist?.items ?? [];
+  return items[Math.min(playlistSelection.value, items.length - 1)] ?? null;
+});
+const previewKind = computed(() => {
+  if (!isPlaylist.value) return props.entry.type;
+  return previewPath.value ? playableKind(previewPath.value) : null;
+});
 
 // Focus preservation: text inputs bind to local refs, sync to entry on blur.
 const localPath = ref(props.entry.path ?? "");
@@ -255,9 +275,29 @@ function onMediaLoaded(event: Event) {
   if (width && height) sourceSize.value = [width, height];
   if (element instanceof HTMLVideoElement && element.paused) element.currentTime = 0.001;
 }
-const placement = computed(() =>
-  sourceSize.value ? previewPlacement(framing.value, sourceSize.value, previewTarget.value) : null,
+const previewFraming = computed<MediaFraming>(() =>
+  isPlaylist.value ? { ...defaultFraming(), fit: framing.value.fit } : framing.value,
 );
+const placement = computed(() =>
+  sourceSize.value ? previewPlacement(previewFraming.value, sourceSize.value, previewTarget.value) : null,
+);
+const previewReadouts = computed(() => {
+  const overlay = props.entry.playlist?.overlay;
+  if (!isPlaylist.value || !overlay || framing.value.fit !== "contain" || !sourceSize.value) return [];
+  const canvas = previewTarget.value;
+  const bars = readoutBars(fitArea(sourceSize.value, canvas), canvas);
+  if (!bars) return [];
+  const percent = (area: Area) => ({
+    x: (area.x / canvas[0]) * 100,
+    y: (area.y / canvas[1]) * 100,
+    width: (area.width / canvas[0]) * 100,
+    height: (area.height / canvas[1]) * 100,
+  });
+  return [
+    overlay.cpu ? { label: "CPU", rect: percent(bars[0]) } : null,
+    overlay.gpu ? { label: "GPU", rect: percent(bars[1]) } : null,
+  ].filter((readout) => readout !== null);
+});
 const percentRect = (rect: { x: number; y: number; width: number; height: number }) => ({
   left: `${rect.x}%`,
   top: `${rect.y}%`,
@@ -267,7 +307,7 @@ const percentRect = (rect: { x: number; y: number; width: number; height: number
 
 let drag: { x: number; y: number; start: MediaFraming; width: number; height: number } | null = null;
 function onPreviewPointerDown(event: PointerEvent) {
-  if (!isFileMedia.value || !sourceSize.value || !placement.value) return;
+  if (!isFileMedia.value || isPlaylist.value || !sourceSize.value || !placement.value) return;
   const element = event.currentTarget as HTMLElement;
   drag = {
     x: event.clientX,
@@ -290,14 +330,14 @@ function onPreviewPointerUp() {
   config.markDirty();
 }
 function onPreviewWheel(event: WheelEvent) {
-  if (!isFileMedia.value || !mediaPreviewUrl.value) return;
+  if (!isFileMedia.value || isPlaylist.value || !mediaPreviewUrl.value) return;
   event.preventDefault();
   setFraming({ ...framing.value, zoom: framing.value.zoom * Math.exp(-event.deltaY * 0.0015) });
 }
 const showSensorPreview = computed(
   () => props.entry.type === "sensor" && sensorPreviewSupported.value && !!previewSize.value,
 );
-const isFileMedia = computed(() => ["image", "gif", "video"].includes(props.entry.type));
+const isFileMedia = computed(() => ["image", "gif", "video", "playlist"].includes(props.entry.type));
 const showPreview = computed(
   () => !!previewSize.value && (showSensorPreview.value || isFileMedia.value || props.entry.type === "color"),
 );
@@ -319,7 +359,7 @@ function clearMediaPreview() {
 }
 
 watch(
-  [() => isFileMedia.value && showPreview.value, () => props.entry.path],
+  [() => isFileMedia.value && showPreview.value, () => previewPath.value],
   async ([visible, path]) => {
     const revision = ++mediaPreviewRevision;
     clearMediaPreview();
@@ -350,9 +390,9 @@ const previewCaption = computed(() => {
   if (previewError.value) return t("lcd.configCard.previewUnavailable");
   if (props.entry.type === "sensor") return t("lcd.configCard.captionLive", { size });
   if (isFileMedia.value) {
-    if (!props.entry.path) return t("lcd.configCard.captionNoFile", { size });
+    if (!previewPath.value) return t("lcd.configCard.captionNoFile", { size });
     const fit = FIT_OPTIONS.value.find((option) => option.value === framing.value.fit)?.label ?? "";
-    if (framing.value.zoom > 1) return t("lcd.configCard.captionFitZoom", { size, fit, zoom: framing.value.zoom.toFixed(1) });
+    if (previewFraming.value.zoom > 1) return t("lcd.configCard.captionFitZoom", { size, fit, zoom: framing.value.zoom.toFixed(1) });
     return t("lcd.configCard.captionFit", { size, fit });
   }
   return size;
@@ -745,7 +785,7 @@ async function handleStopClean() {
         <label class="muted">{{ t("lcd.configCard.mediaType") }}</label>
         <n-select :value="entry.type" :options="mediaTypeOptions" size="small" @update:value="onMediaType" />
       </div>
-      <div v-if="['video', 'gif'].includes(entry.type)" class="field">
+      <div v-if="['video', 'gif', 'playlist'].includes(entry.type)" class="field">
         <label class="muted">{{ t("lcd.configCard.fps") }}</label>
         <n-input-number :value="entry.fps ?? 30" size="small" :min="1" :max="120" @update:value="onFps" />
       </div>
@@ -782,7 +822,7 @@ async function handleStopClean() {
 
     <div v-if="entry.type !== 'custom'" class="media-layout" :class="{ 'with-preview': showPreview }">
       <div class="media-settings">
-        <div v-if="isFileMedia" class="field">
+        <div v-if="isFileMedia && !isPlaylist" class="field">
           <label class="muted">{{ t("lcd.configCard.path") }}</label>
           <div class="path-row">
             <n-input v-model:value="localPath" @blur="commitPath" size="small" placeholder="/path/to/media" />
@@ -796,7 +836,7 @@ async function handleStopClean() {
               <n-radio-button v-for="option in FIT_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</n-radio-button>
             </n-radio-group>
           </div>
-          <div class="field zoom">
+          <div v-if="!isPlaylist" class="field zoom">
             <label class="muted">{{ t("lcd.configCard.zoom") }}</label>
             <LabeledSlider
               :model-value="framing.zoom"
@@ -807,9 +847,15 @@ async function handleStopClean() {
               @update:model-value="(zoom: number) => setFraming({ ...framing, zoom })"
             />
           </div>
-          <n-button size="small" quaternary :disabled="isDefaultFraming(entry.framing)" @click="setFraming(defaultFraming())">{{ t("common.reset") }}</n-button>
+          <n-button v-if="!isPlaylist" size="small" quaternary :disabled="isDefaultFraming(entry.framing)" @click="setFraming(defaultFraming())">{{ t("common.reset") }}</n-button>
         </div>
-        <p v-if="isFileMedia && mediaPreviewUrl" class="hint">{{ t("lcd.configCard.dragHint") }}</p>
+        <PlaylistEditor
+          v-if="isPlaylist && entry.playlist"
+          v-model:selected="playlistSelection"
+          :playlist="entry.playlist"
+          :fit="framing.fit"
+        />
+        <p v-if="isFileMedia && !isPlaylist && mediaPreviewUrl" class="hint">{{ t("lcd.configCard.dragHint") }}</p>
 
         <div v-if="entry.type === 'color'" class="field">
           <label class="muted">{{ t("lcd.configCard.color") }}</label>
@@ -841,7 +887,7 @@ async function handleStopClean() {
       <aside v-if="showPreview" class="media-preview">
         <div
           class="preview-frame"
-          :class="{ pannable: isFileMedia && !!mediaPreviewUrl }"
+          :class="{ pannable: isFileMedia && !isPlaylist && !!mediaPreviewUrl }"
           :style="{ aspectRatio: previewAspect, '--preview-brightness': brightness / 100 }"
           @pointerdown="onPreviewPointerDown"
           @pointermove="onPreviewPointerMove"
@@ -852,7 +898,7 @@ async function handleStopClean() {
           <img v-if="entry.type === 'sensor' && sensorPreview" :src="`data:image/jpeg;base64,${sensorPreview}`" :alt="t('lcd.configCard.sensorPreviewAlt')" />
           <div v-else-if="isFileMedia && mediaPreviewUrl" class="framing-box" :style="placement ? percentRect(placement.box) : undefined">
             <video
-              v-if="entry.type === 'video'"
+              v-if="previewKind === 'video'"
               ref="previewVideo"
               class="framed-media"
               :src="mediaPreviewUrl"
@@ -878,11 +924,20 @@ async function handleStopClean() {
           </div>
           <div v-else-if="entry.type === 'color'" class="preview-color" :style="{ background: `rgb(${(entry.rgb ?? [0, 0, 0]).join(',')})` }" />
           <span v-else class="muted">{{ previewError ? "!" : "…" }}</span>
+          <div
+            v-for="readout in mediaPreviewUrl ? previewReadouts : []"
+            :key="readout.label"
+            class="readout-bar"
+            :style="percentRect(readout.rect)"
+          >
+            <span class="readout-label">{{ readout.label }}</span>
+            <span class="readout-value">°C</span>
+          </div>
         </div>
         <div class="preview-footer">
           <span class="preview-caption" :class="{ error: previewError }" :title="previewError">{{ previewCaption }}</span>
           <button
-            v-if="entry.type === 'video' && mediaPreviewUrl"
+            v-if="previewKind === 'video' && mediaPreviewUrl"
             class="preview-play"
             :title="previewPlaying ? t('lcd.configCard.pausePreview') : t('lcd.configCard.playPreview')"
             @click="togglePreviewPlayback"
@@ -1100,6 +1155,24 @@ async function handleStopClean() {
   width: 100%;
   height: 100%;
   object-fit: fill;
+}
+.readout-bar {
+  position: absolute;
+  container-type: size;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  line-height: 1.1;
+}
+.readout-label {
+  color: #aaa;
+  font-size: min(18cqw, 9cqh);
+}
+.readout-value {
+  color: #fff;
+  font-size: min(36cqw, 18cqh);
 }
 .preview-footer {
   display: flex;

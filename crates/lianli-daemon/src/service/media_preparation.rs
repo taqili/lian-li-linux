@@ -170,7 +170,9 @@ fn prepare(
     let sensors = if request.jobs.iter().any(|job| {
         matches!(
             job.config.media_type,
-            lianli_shared::media::MediaType::Sensor | lianli_shared::media::MediaType::Custom
+            lianli_shared::media::MediaType::Sensor
+                | lianli_shared::media::MediaType::Custom
+                | lianli_shared::media::MediaType::Playlist
         )
     }) {
         lianli_shared::sensors::enumerate_sensors()

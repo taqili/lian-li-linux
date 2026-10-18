@@ -11,6 +11,29 @@ const filters = {
 
 export type MediaFileKind = keyof typeof filters;
 
+export type PlayableKind = "image" | "gif" | "video";
+
+/** Mirrors `PlaylistItemKind::from_path` in lianli-shared. */
+export function playableKind(path: string): PlayableKind | null {
+  return (["image", "gif", "video"] as const).find((kind) => matchesMediaFile(path, kind)) ?? null;
+}
+
+export async function pickPlayableFiles(): Promise<string[]> {
+  const extensions = [...filters.image.extensions, ...filters.gif.extensions, ...filters.video.extensions];
+  const selected = await open({
+    multiple: true,
+    directory: false,
+    filters: [{ name: tr("lcd.picker.playlistMedia"), extensions }],
+  });
+  const paths = Array.isArray(selected) ? selected : typeof selected === "string" ? [selected] : [];
+  return paths.filter((path) => playableKind(path) !== null);
+}
+
+export async function pickFolder(): Promise<string | null> {
+  const selected = await open({ multiple: false, directory: true });
+  return typeof selected === "string" ? selected : null;
+}
+
 export function matchesMediaFile(path: string, kind: MediaFileKind): boolean {
   const extension = /\.([^.\\/]+)$/.exec(path)?.[1].toLowerCase() ?? "";
   return filters[kind].extensions.includes(extension);

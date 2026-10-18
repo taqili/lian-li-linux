@@ -98,6 +98,8 @@ export default {
     lcdTemplateBackground: "{lcd}: Template '{template}' background",
     lcdTemplateWidget: "{lcd}: Template '{template}' widget '{widget}'",
     noMediaPath: "{lcd} has no media path",
+    playlistItem: "{lcd} playlist item",
+    emptyPlaylist: "{lcd} playlist has no items",
     noTemplateId: "{lcd} has no template ID",
     missingTemplate: "{lcd} references missing template '{template}'",
     notRegularFile: "Asset is not a regular file",

@@ -55,6 +55,10 @@ const messages: typeof en = {
     replaced: "此导入正在进行或已被替换。请重新检查进度",
     unverified: "此导入没有经过验证的结果",
   },
+  mediaFolder: {
+    relativePath: "请选择文件夹的绝对路径",
+    readFailed: "无法读取文件夹：{error}",
+  },
   mediaPreview: {
     relativePath: "预览需要媒体文件的绝对路径",
     unsupportedType: "无法预览此类型的文件",

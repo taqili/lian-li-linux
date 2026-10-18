@@ -57,6 +57,10 @@ export default {
     replaced: "This import is active or was replaced. Check progress again",
     unverified: "The import has no verified result",
   },
+  mediaFolder: {
+    relativePath: "Choose an absolute folder path",
+    readFailed: "Cannot read folder: {error}",
+  },
   mediaPreview: {
     relativePath: "Preview needs an absolute media path",
     unsupportedType: "This file type cannot be previewed",

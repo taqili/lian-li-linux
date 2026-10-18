@@ -4,6 +4,7 @@ use crate::fan::{FanConfig, FanCurve};
 use crate::media::{
     DoublegaugeDescriptor, MediaFraming, MediaType, SensorDescriptor, SensorSourceConfig,
 };
+use crate::playlist::PlaylistConfig;
 use crate::rgb::RgbAppConfig;
 use crate::ui_message::{ui_message_of, UiError, UiMessage, UiText};
 use anyhow::{bail, Context, Result};
@@ -51,6 +52,8 @@ pub struct LcdConfig {
     pub brightness: Option<u8>,
     #[serde(default, skip_serializing_if = "MediaFraming::is_default")]
     pub framing: MediaFraming,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlist: Option<PlaylistConfig>,
 }
 
 impl LcdConfig {
@@ -115,6 +118,20 @@ impl LcdConfig {
                 }
             }
         }
+        if self.media_type == MediaType::Playlist {
+            if let Some(path) = self
+                .playlist
+                .iter()
+                .flat_map(|playlist| &playlist.items)
+                .find(|path| !path.exists())
+            {
+                bail!(
+                    "LCD[{}] playlist item '{}' does not exist",
+                    self.device_id(),
+                    path.display()
+                );
+            }
+        }
         Ok(())
     }
 
@@ -154,6 +171,14 @@ impl LcdConfig {
                 {
                     bail!("LCD[{device_id}] custom entry requires a 'template_id' field");
                 }
+            }
+            MediaType::Playlist => {
+                let playlist = self.playlist.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("LCD[{device_id}] playlist entry requires a 'playlist' section")
+                })?;
+                playlist
+                    .validate()
+                    .map_err(|error| anyhow::anyhow!("LCD[{device_id}] {error}"))?;
             }
         }
 

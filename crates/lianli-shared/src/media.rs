@@ -13,6 +13,7 @@ pub enum MediaType {
     Doublegauge,
     Cooler,
     Custom,
+    Playlist,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

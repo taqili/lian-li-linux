@@ -193,6 +193,21 @@ pub fn prepare_media_asset(
             )?;
             Ok(MediaAssetKind::Sensor { asset })
         }
+        MediaType::Playlist => {
+            let playlist = cfg.playlist.as_ref().ok_or(MediaError::InvalidConfig(
+                "playlist entry requires a 'playlist' section".into(),
+            ))?;
+            let asset = CustomAsset::playlist(
+                playlist,
+                cfg.framing.fit,
+                cfg.orientation,
+                screen,
+                all_sensors,
+                cfg.fps.unwrap_or(default_fps).min(fps_cap),
+                &control,
+            )?;
+            Ok(MediaAssetKind::Custom { asset })
+        }
         MediaType::Doublegauge | MediaType::Cooler => Err(MediaError::InvalidConfig(
             "Doublegauge/Cooler are retired; this LCD should have been migrated to Custom on load"
                 .into(),

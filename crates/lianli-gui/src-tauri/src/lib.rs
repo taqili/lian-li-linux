@@ -6,6 +6,7 @@ mod external_link;
 mod installation;
 mod ipc;
 mod managed_import;
+mod media_folder;
 mod media_preview;
 mod service_operations;
 mod session_worker;
@@ -191,6 +192,18 @@ async fn open_external(url: String) -> Result<(), CommandError> {
     tauri::async_runtime::spawn_blocking(move || external_link::open(&url))
         .await
         .map_err(|error| format!("Link worker failed: {error}"))?
+}
+
+#[tauri::command]
+async fn list_media_folder(
+    path: String,
+    recursive: bool,
+) -> Result<media_folder::FolderMedia, CommandError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        media_folder::list(std::path::Path::new(&path), recursive)
+    })
+    .await
+    .map_err(|error| format!("Folder scan worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -403,6 +416,7 @@ pub fn run() {
             managed_import_start,
             managed_import_status,
             managed_import_result,
+            list_media_folder,
             media_preview,
             open_external,
             service_action,

@@ -206,7 +206,8 @@ export type MediaType =
   | "sensor"
   | "doublegauge"
   | "cooler"
-  | "custom";
+  | "custom"
+  | "playlist";
 
 export type SensorCategory =
   | "cpu_temp"
@@ -313,6 +314,26 @@ export interface LcdConfig {
   aio_512_frame?: boolean | null;
   brightness?: number | null;
   framing?: MediaFraming;
+  playlist?: PlaylistConfig | null;
+}
+
+export interface TemperatureOverlay {
+  cpu: boolean;
+  gpu: boolean;
+  /** Omitted to pick the sensor automatically. */
+  cpu_source?: SensorSourceConfig;
+  gpu_source?: SensorSourceConfig;
+}
+
+export interface PlaylistConfig {
+  items: string[];
+  image_seconds: number;
+  /** 0 plays each GIF or video once. */
+  min_animation_seconds: number;
+  /** 0 never cuts a GIF or video short. */
+  max_animation_seconds: number;
+  shuffle: boolean;
+  overlay: TemperatureOverlay;
 }
 
 export type MediaFit = "stretch" | "contain" | "cover";

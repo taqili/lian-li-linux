@@ -29,6 +29,7 @@ const incomplete = computed(() =>
   props.lcds.flatMap((entry) => {
     if (["image", "gif", "video"].includes(entry.type) && !entry.path) return [t("lcd.managedImport.chooseFile", { screen: screenName(entry) })];
     if (entry.type === "custom" && !entry.template_id) return [t("lcd.managedImport.chooseTemplate", { screen: screenName(entry) })];
+    if (entry.type === "playlist" && !entry.playlist?.items.length) return [t("lcd.managedImport.chooseFile", { screen: screenName(entry) })];
     return [];
   }),
 );

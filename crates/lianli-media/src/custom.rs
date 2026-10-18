@@ -8,6 +8,7 @@
 mod geometry;
 mod helpers;
 mod history;
+mod playlist;
 mod widgets;
 
 use crate::common::{encode_jpeg_rgba, render_dimensions, MediaError};
@@ -23,11 +24,14 @@ use image::{Rgba, RgbaImage};
 use imageproc::drawing::draw_filled_rect_mut;
 use imageproc::rect::Rect;
 use lianli_shared::fonts::default_font_path;
+use lianli_shared::playlist::PlaylistConfig;
 use lianli_shared::screen::ScreenInfo;
 use lianli_shared::sensors::{read_sensor_value, SensorInfo};
 use lianli_shared::systeminfo::SysSensor;
+use lianli_shared::template::ImageFit;
 use lianli_shared::template::{LcdTemplate, TemplateBackground, WidgetKind};
 use parking_lot::Mutex;
+use playlist::Playlist;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -72,6 +76,7 @@ pub struct CustomAsset {
     smooth_edges: bool,
     frame_index: AtomicUsize,
     start_instant: Instant,
+    playlist: Option<Mutex<Playlist>>,
     _retained_budget: crate::resource_budget::RetainedBudget,
 }
 
@@ -96,7 +101,82 @@ impl CustomAsset {
         fps: f32,
         control: impl Into<PreparationControl>,
     ) -> Result<Arc<Self>, MediaError> {
+        Self::build(
+            template,
+            orientation,
+            screen,
+            all_sensors,
+            smooth_edges,
+            fps,
+            control.into(),
+            None,
+        )
+    }
+
+    /// A black canvas that cycles through the playlist's media on every
+    /// render tick, sharing the template renderer's delivery paths.
+    pub fn playlist(
+        config: &PlaylistConfig,
+        fit: ImageFit,
+        orientation: f32,
+        screen: &ScreenInfo,
+        all_sensors: &[SensorInfo],
+        fps: f32,
+        control: impl Into<PreparationControl>,
+    ) -> Result<Arc<Self>, MediaError> {
         let control = control.into();
+        control.check()?;
+        let (canvas_w, canvas_h) = render_dimensions(screen, orientation);
+        let template: LcdTemplate = serde_json::from_value(serde_json::json!({
+            "id": "playlist",
+            "name": "Playlist",
+            "base_width": canvas_w,
+            "base_height": canvas_h,
+            "background": {"type": "color", "rgb": [0, 0, 0, 255]},
+            "widgets": []
+        }))
+        .map_err(|error| MediaError::InvalidConfig(error.to_string()))?;
+        let stills_only = config.items.iter().all(|path| {
+            lianli_shared::playlist::PlaylistItemKind::from_path(path)
+                == Some(lianli_shared::playlist::PlaylistItemKind::Image)
+        });
+        // Still images only need ticks fine enough to honour hold times.
+        let fps = if stills_only {
+            fps.clamp(1.0, 4.0)
+        } else {
+            fps.clamp(1.0, 60.0)
+        };
+        let playlist = Playlist::new(
+            config,
+            fit,
+            (canvas_w, canvas_h),
+            fps,
+            all_sensors,
+            &control,
+        )?;
+        Self::build(
+            &template,
+            orientation,
+            screen,
+            all_sensors,
+            false,
+            fps,
+            control,
+            Some(playlist),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        template: &LcdTemplate,
+        orientation: f32,
+        screen: &ScreenInfo,
+        all_sensors: &[SensorInfo],
+        smooth_edges: bool,
+        fps: f32,
+        control: PreparationControl,
+        playlist: Option<Playlist>,
+    ) -> Result<Arc<Self>, MediaError> {
         control.check()?;
         let (canvas_w, canvas_h) = render_dimensions(screen, orientation);
         let (uniform_scale, scaled_w, scaled_h) =
@@ -303,6 +383,7 @@ impl CustomAsset {
             smooth_edges,
             frame_index: AtomicUsize::new(1),
             start_instant: Instant::now(),
+            playlist: playlist.map(Mutex::new),
         }))
     }
 
@@ -500,6 +581,10 @@ impl CustomAsset {
             }
         }
 
+        if let Some(playlist) = &self.playlist {
+            any_dynamic_changed |= playlist.lock().advance(now, &self.default_font);
+        }
+
         if !any_dynamic_changed {
             return Ok(None);
         }
@@ -508,6 +593,9 @@ impl CustomAsset {
         scratch
             .as_mut()
             .copy_from_slice(self.template_image.as_raw());
+        if let Some(playlist) = &self.playlist {
+            playlist.lock().draw(&mut scratch);
+        }
         for (widget, state) in self.template.widgets.iter().zip(states.iter_mut()) {
             if !widget.visible {
                 continue;
@@ -576,6 +664,7 @@ mod tests {
             smooth_edges: false,
             frame_index: AtomicUsize::new(0),
             start_instant: Instant::now(),
+            playlist: None,
             _retained_budget: crate::resource_budget::RetainedBudget::default(),
         }
     }

@@ -1,5 +1,6 @@
 use crate::config::LcdConfig;
 use crate::media::MediaType;
+use crate::playlist::PlaylistItemKind;
 use crate::template::{LcdTemplate, TemplateBackground, WidgetKind};
 use crate::ui_message::{UiError, UiMessage};
 use serde::{Deserialize, Serialize};
@@ -57,11 +58,47 @@ pub fn stored_lcd_dependencies(config: &LcdConfig) -> Vec<AssetDependency> {
             kind: AssetKind::Font,
         });
     }
+    dependencies.extend(playlist_dependencies(config, &owner));
     dependencies
+}
+
+fn playlist_dependencies(config: &LcdConfig, owner: &str) -> Vec<AssetDependency> {
+    let Some(playlist) = &config.playlist else {
+        return Vec::new();
+    };
+    playlist
+        .items
+        .iter()
+        .map(|path| {
+            let (owner, owner_ui) = lcd_owner(
+                owner,
+                "status.mediaAccess.playlistItem",
+                format!("{owner} playlist item"),
+            );
+            AssetDependency {
+                path: path.clone(),
+                owner,
+                owner_ui,
+                kind: match PlaylistItemKind::from_path(path) {
+                    Some(PlaylistItemKind::Image) => AssetKind::Image,
+                    Some(PlaylistItemKind::Animation) => AssetKind::Gif,
+                    Some(PlaylistItemKind::Video) => AssetKind::Video,
+                    None => AssetKind::File,
+                },
+            }
+        })
+        .collect()
 }
 
 pub fn map_lcd_paths(config: &mut LcdConfig, mut map: impl FnMut(&mut PathBuf)) {
     if let Some(path) = &mut config.path {
+        map(path);
+    }
+    for path in config
+        .playlist
+        .iter_mut()
+        .flat_map(|playlist| &mut playlist.items)
+    {
         map(path);
     }
     if let Some(path) = config
@@ -270,6 +307,19 @@ pub fn lcd_dependencies(
                     )
                 })?;
             dependencies = template_dependencies_for(template, Some(&owner));
+        }
+        MediaType::Playlist => {
+            if config
+                .playlist
+                .as_ref()
+                .is_none_or(|playlist| playlist.items.is_empty())
+            {
+                return Err(lcd_error(
+                    "status.mediaAccess.emptyPlaylist",
+                    format!("{owner} playlist has no items"),
+                ));
+            }
+            dependencies = playlist_dependencies(config, &owner);
         }
         MediaType::Color | MediaType::Doublegauge | MediaType::Cooler => {}
     }

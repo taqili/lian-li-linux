@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
-import { Plus, Image, Film, Palette, Gauge, GripVertical, LayoutTemplate, MonitorOff } from "lucide-vue-next";
+import { Plus, Image, Film, Palette, Gauge, GripVertical, LayoutTemplate, ListVideo, MonitorOff } from "lucide-vue-next";
 import type { LcdConfig, MediaType } from "@/types";
 import { useConfigStore } from "@/stores/config";
 import { useDevicesStore } from "@/stores/devices";
@@ -47,6 +47,7 @@ const MEDIA_META: Record<MediaType, { label: MessageKey; icon: typeof Image }> =
   color: { label: "lcd.mediaTypes.color", icon: Palette },
   sensor: { label: "lcd.mediaTypes.sensor", icon: Gauge },
   custom: { label: "lcd.mediaTypes.custom", icon: LayoutTemplate },
+  playlist: { label: "lcd.mediaTypes.playlist", icon: ListVideo },
   doublegauge: { label: "lcd.mediaTypes.legacy", icon: Gauge },
   cooler: { label: "lcd.mediaTypes.legacy", icon: Gauge },
 };
@@ -131,6 +132,8 @@ function summary(entry: LcdConfig): string {
       const [r, g, b] = entry.rgb ?? [0, 0, 0];
       return `rgb(${r}, ${g}, ${b})`;
     }
+    case "playlist":
+      return t("lcd.page.playlistItems", { count: entry.playlist?.items.length ?? 0 });
     default:
       return entry.path?.split("/").pop() ?? t("lcd.page.noFile");
   }
